@@ -123,6 +123,14 @@ def pip_install(url: str, secret: str,
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def list_bots(url: str, secret: str) -> dict:
+    """Fetch all bots living on this PID (for admin panel aggregation)."""
+    try:
+        r = requests.get(f"{url}/bots", headers=_h(secret), timeout=TIMEOUT)
+        return r.json() if r.status_code == 200 else {"ok": False, "error": f"http {r.status_code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 # ── Smart VM Selector ────────────────────────────────────────────
 
 def _check_vm_lightweight(vm: dict) -> bool:

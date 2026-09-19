@@ -596,7 +596,7 @@ START_VIDEO_FILE_ID = os.environ.get(
 ).strip()
 START_ANIMATION_FILE_ID = os.environ.get(
     "START_ANIMATION_FILE_ID",
-    "CgACAgUAAxkDAAID52qugcENIJKhnVRzi3nC_S2p3RaQAAKWJAACL_NwVauImv3F4MxWPQQ",
+    "BAACAgUAAxkDAAID12qucA1R0WLZ0Gj86p3UFjEAAY7yHwACSSQAAi_zcFWDCm3ZKQ5twj0E",
 ).strip()
 START_VIDEO_LOCAL = BASE_DIR / "storage" / "videos" / "start.mp4"
 START_ANIMATION_LOCAL = BASE_DIR / "storage" / "videos" / "start_autoplay.mp4"
@@ -2274,19 +2274,19 @@ def render_adm_vm_info(call: types.CallbackQuery, vm_id: str) -> None:
         ack(call, "VM not found"); return
     if _vmc is not None:
         try:
-            st = _vmc.vm_status(vm["url"], vm.get("secret", ""))
+            st = _vmc.get_status(vm["url"], vm.get("secret", ""))
         except Exception:
-            st = {"ok": False}
+            st = None
     else:
-        st = {"ok": False}
-    if st.get("ok"):
+        st = None
+    if st:
         online = "🟢 Online"
         ram = (f"{bullet('RAM', str(st.get('used_ram_mb', '?')) + ' / ' + str(st.get('total_ram_mb', '?')) + ' MB')}\n"
                f"{bullet('Free', str(st.get('free_ram_mb', '?')) + ' MB')}\n"
                f"{bullet('Bots', str(st.get('running_bots', '?')) + ' / ' + str(st.get('max_bots', '?')))}")
     else:
         online = "🔴 Offline"
-        ram = bullet('Error', st.get('error', 'unreachable') if isinstance(st, dict) else 'unreachable')
+        ram = bullet('Error', (st.get('error', 'unreachable') if isinstance(st, dict) else 'unreachable'))
     tog = "🔴 Disable" if vm.get("enabled", True) else "🟢 Enable"
     cap = (f"<b>🖥️ {esc(vm_id)}</b>\n{G['div_eq']}\n"
            f"{bullet('Status', online)}\n"
@@ -3281,10 +3281,10 @@ def restart_child(b: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ═════════════════════════════════════════════════════════════════
-#  VM RUNTIME  (deploys + controls go to free PIDs first)
+#  VM RUNTIME  (PID-only, no local hosting)
 #  Rules: max 3 bots per PID; 3rd bot only if the 2 running bots
 #  are lightweight (<80MB each); pick the PID with most free RAM.
-#  Local subprocess is the automatic fallback.
+#  No local fallback — all start/stop/logs/delete via PID + MongoDB.
 # ═════════════════════════════════════════════════════════════════
 _VM_MAX_BOTS   = 3
 _VM_RAM_LIMIT  = 250
@@ -3315,7 +3315,7 @@ def _vm_all_light(vm: Dict[str, Any]) -> bool:
         return False
     for x in bots:
         try:
-            st = _vmc.bot_stats(vm["url"], vm.get("secret", ""), x["_id"])
+            st = _vmc.get_bot_stats(vm["url"], vm.get("secret", ""), x["_id"])
         except Exception:
             return False
         if not st or not st.get("ok"):
@@ -3362,6 +3362,69 @@ def _vm_pick_best() -> Optional[Dict[str, Any]]:
         return None
     cands.sort(key=lambda x: x[0], reverse=True)
     return cands[0][1]
+
+
+def _pid_fetch_all_bots() -> Dict[str, Dict[str, Any]]:
+    """Aggregate live bots from ALL PIDs. Returns bot_id -> {vm_id, live, record}.
+    No local fallback — PIDs + DB are the only source of truth."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not _ADDONS_OK or _vmc is None:
+        return out
+    try:
+        db_bots = db_load_ro().get("bots", {}) or {}
+    except Exception:
+        db_bots = {}
+    for b in db_bots.values():
+        try:
+            out[b["_id"]] = {"vm_id": b.get("vm_id"), "live": None, "record": b}
+        except Exception:
+            pass
+    for vm_id, vm in _vm_nodes().items():
+        if not vm.get("enabled", True):
+            continue
+        try:
+            res = _vmc.list_bots(vm["url"], vm.get("secret", ""))
+        except Exception:
+            continue
+        bots = res.get("bots") if isinstance(res, dict) else None
+        if not isinstance(bots, list):
+            continue
+        for rb in bots:
+            try:
+                bid = rb.get("bot_id")
+                if not bid:
+                    continue
+                cur = out.get(bid) or {"vm_id": vm_id, "live": None, "record": None}
+                cur["vm_id"] = vm_id
+                cur["live"] = rb
+                if cur.get("record") is None:
+                    try:
+                        cur["record"] = find_bot(bid)
+                    except Exception:
+                        cur["record"] = None
+                out[bid] = cur
+            except Exception:
+                pass
+    return out
+
+
+def _pid_live_status(bot_id: str, b_doc: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Live status from PID only. Never uses local RUNNING for remote bots."""
+    try:
+        vm_id = (b_doc or {}).get("vm_id")
+    except Exception:
+        vm_id = None
+    if vm_id and _ADDONS_OK and _vmc is not None:
+        vm = _vm_get(vm_id)
+        if vm:
+            try:
+                st = _vmc.get_bot_stats(vm["url"], vm.get("secret", ""), bot_id)
+            except Exception:
+                st = None
+            if st and st.get("ok"):
+                return {"running": st.get("status") == "running", "live": st, "vm": vm_id}
+            return {"running": False, "live": st, "vm": vm_id}
+    return {"running": False, "live": None, "vm": vm_id}
 
 
 def _vm_deploy_bot(b: Dict[str, Any], vm: Dict[str, Any]) -> Dict[str, Any]:
@@ -3523,7 +3586,7 @@ def start_child(b: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def stop_child(bot_id: str, manual: bool = True) -> Dict[str, Any]:
-    """Stop on the PID first (if remote), then locally. Keeps DB in sync."""
+    """PID-only stop: stop on PID, sync DB + Mongo. No local hosting."""
     try:
         b = find_bot(bot_id)
     except Exception:
@@ -3535,11 +3598,21 @@ def stop_child(bot_id: str, manual: bool = True) -> Dict[str, Any]:
                 _vmc.stop(vm["url"], vm.get("secret", ""), b["_id"])
             except Exception:
                 pass
+            try:
+                b["status"] = "stopped"
+                save_bot(b)
+            except Exception:
+                pass
+            try:
+                if _mdb is not None:
+                    _mdb.save_bot({"bot_id": b["_id"], "vm_id": b.get("vm_id", ""), "owner_id": b.get("owner", 0), "status": "stopped"})
+            except Exception:
+                pass
     return _stop_child_local(bot_id, manual=manual)
 
 
 def delete_bot_doc(bot_id: str) -> None:
-    """Delete on the PID first (if remote), then drop the local record."""
+    """Delete from PID + MongoDB + local record. PID is source of truth."""
     try:
         b = find_bot(bot_id)
         if b and b.get("vm_id") and _ADDONS_OK and _vmc is not None:
@@ -3552,11 +3625,13 @@ def delete_bot_doc(bot_id: str) -> None:
     except Exception:
         pass
     try:
-        b = find_bot(bot_id)
-        if b and "vm_id" in b:
-            b.pop("vm_id", None)
+        if _ADDONS_OK and _mdb is not None:
             try:
-                save_bot(b)
+                _mdb.delete_bot_record(bot_id)
+            except Exception:
+                pass
+            try:
+                _mdb.delete_bot_file(bot_id)
             except Exception:
                 pass
     except Exception:
@@ -3565,20 +3640,22 @@ def delete_bot_doc(bot_id: str) -> None:
 
 
 def tail_log(bot_id: str, lines: int = 60) -> str:
-    """Remote PID logs when the bot lives on a VM, else local logs."""
+    """PID-only logs. No local fallback for remote bots (no main-bot load)."""
     try:
         b = find_bot(bot_id)
     except Exception:
         b = None
-    if b and b.get("vm_id") and _ADDONS_OK and _vmc is not None:
-        vm = _vm_get(b["vm_id"])
-        if vm:
-            try:
-                r = _vmc.get_logs(vm["url"], vm.get("secret", ""), b["_id"], lines=lines)
-                if r.get("ok"):
-                    return "\n".join(r.get("lines", []))
-            except Exception:
-                pass
+    if b and b.get("vm_id"):
+        if _ADDONS_OK and _vmc is not None:
+            vm = _vm_get(b["vm_id"])
+            if vm:
+                try:
+                    r = _vmc.get_logs(vm["url"], vm.get("secret", ""), b["_id"], lines=lines)
+                    if r.get("ok"):
+                        return "\n".join(r.get("lines", []))
+                except Exception:
+                    pass
+        return ""
     try:
         info = RUNNING.get(bot_id)
     except Exception:
@@ -3592,26 +3669,31 @@ def child_status(bot_id: str, b_doc: Dict[str, Any]) -> Dict[str, Any]:
         vm_id = (b_doc or {}).get("vm_id")
     except Exception:
         vm_id = None
-    if vm_id and _ADDONS_OK and _vmc is not None:
-        vm = _vm_get(vm_id)
-        if vm:
-            try:
-                st = _vmc.bot_stats(vm["url"], vm.get("secret", ""), bot_id)
-            except Exception:
-                st = None
-            if st and st.get("ok"):
-                return {
-                    "running":   st.get("status") == "running",
-                    "pid":       st.get("pid"),
-                    "kind":      "remote-vm",
-                    "uptimeMs":  int(st.get("uptime_s", 0)) * 1000,
-                    "sizeBytes": 0,
-                    "logs":      [],
-                    "cpuPct":    0.0,
-                    "memBytes":  float(st.get("ram_mb", 0)) * 1024 * 1024,
-                    "sandboxed": False,
-                    "vm":        vm_id,
-                }
+    if vm_id:
+        if _ADDONS_OK and _vmc is not None:
+            vm = _vm_get(vm_id)
+            if vm:
+                try:
+                    st = _vmc.get_bot_stats(vm["url"], vm.get("secret", ""), bot_id)
+                except Exception:
+                    st = None
+                if st and st.get("ok"):
+                    return {
+                        "running":   st.get("status") == "running",
+                        "pid":       st.get("pid"),
+                        "kind":      "remote-vm",
+                        "uptimeMs":  int(st.get("uptime_s", 0)) * 1000,
+                        "sizeBytes": 0,
+                        "logs":      [],
+                        "cpuPct":    0.0,
+                        "memBytes":  float(st.get("ram_mb", 0)) * 1024 * 1024,
+                        "sandboxed": False,
+                        "vm":        vm_id,
+                    }
+        # Remote bot but PID unreachable — report stopped, never local.
+        return {"running": False, "pid": None, "kind": "remote-vm", "uptimeMs": 0,
+                "sizeBytes": 0, "logs": [], "cpuPct": 0.0, "memBytes": 0.0,
+                "sandboxed": False, "vm": vm_id}
     info = RUNNING.get(bot_id)
     running = bool(info and info["proc"].poll() is None)
     bot_dir = Path(b_doc.get("dir") or "")
@@ -5108,7 +5190,7 @@ def render_main_menu(chat_id: int, uid: int,
     u = db_load()["users"].get(str(uid)) or {}
     plan = PLAN_LIMITS.get(u.get("plan", "free"), PLAN_LIMITS["free"])
     bots = list_user_bots(uid)
-    running = sum(1 for b in bots if b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None)
+    running = sum(1 for b in bots if b.get("status") == "running")
     intro_block = f"{intro}\n{G['div']}\n" if intro else ""
     cap = (
         f"<b>{esc(BRAND)} {esc(BRAND_VER)}</b>\n"
@@ -5514,7 +5596,7 @@ def render_bots_menu(call: types.CallbackQuery) -> None:
         cap += f"\n{sc('You have not deployed any bots yet')}.\n{sc('Tap upload bot to begin')}."
     else:
         for b in sorted(bots, key=lambda x: x.get("name", "")):
-            running = b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None
+            running = b.get("status") == "running"
             mark = G["play"] if running else G["stop"]
             kb.add(Btn(
                 f"{mark}  {sc(b['name'])[:30]}",
@@ -5806,7 +5888,7 @@ def render_user_stats(call: types.CallbackQuery) -> None:
     u = d["users"][str(uid)]
     p = PLAN_LIMITS.get(u.get("plan", "free"), PLAN_LIMITS["free"])
     bots = list_user_bots(uid)
-    running = sum(1 for b in bots if b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None)
+    running = sum(1 for b in bots if b.get("status") == "running")
     stopped = len(bots) - running
 
     # payments
@@ -7275,16 +7357,34 @@ def render_adm_users(call: types.CallbackQuery) -> None:
 
 
 def render_adm_allbots(call: types.CallbackQuery) -> None:
-    d = db_load()["bots"]
-    items = list(d.values())[:25]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{b['_id']}</code> — {esc(b['name'])} "
-        f"{G['bullet']} <i>uid {b['owner']}</i> "
-        f"{G['bullet']} {'run' if b['_id'] in RUNNING and RUNNING[b['_id']]['proc'].poll() is None else 'idle'}"
-        for b in items
-    ) or f"<i>{sc('no bots')}</i>"
+    # All bots from ALL PIDs (live) + DB. No local RUNNING — PIDs are truth.
+    agg = _pid_fetch_all_bots()
+    try:
+        d = db_load_ro().get("bots", {}) or {}
+    except Exception:
+        d = {}
+    for bid, b in (d.items() if isinstance(d, dict) else []):
+        if bid not in agg:
+            try:
+                agg[bid] = {"vm_id": b.get("vm_id"), "live": None, "record": b}
+            except Exception:
+                pass
+    items = list(agg.values())[:25]
+    def _row(e: Dict[str, Any]) -> str:
+        rec = e.get("record") or {}
+        live = e.get("live") or {}
+        bid = rec.get("_id") or live.get("bot_id") or "?"
+        name = rec.get("name") or live.get("bot_id") or "?"
+        owner = rec.get("owner") or "?"
+        vm_id = e.get("vm_id") or rec.get("vm_id") or "?"
+        status = (live.get("status") if isinstance(live, dict) else None) or rec.get("status") or "idle"
+        icon = "run" if status == "running" else "idle"
+        return (f"{G['bullet']} <code>{esc(bid)}</code> — {esc(name)} "
+                f"{G['bullet']} <i>uid {esc(owner)}</i> "
+                f"{G['bullet']} {esc(vm_id)} {G['bullet']} {icon}")
+    rows = "\n".join(_row(e) for e in items) or f"<i>{sc('no bots')}</i>"
     cap = (
-        f"<b>{G['diamond']} {sc('All Bots')} ({len(d)})</b>\n"
+        f"<b>{G['diamond']} {sc('All Bots')} ({len(agg)})</b>\n"
         f"{G['div_eq']}\n{rows}\n{G['div']}{FOOTER}"
     )
     show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
@@ -11128,11 +11228,20 @@ def action_adm_downgrade_expired(admin_uid: int) -> None:
 
 
 def _do_restart_all_bots(admin_uid: int) -> Tuple[int, int]:
-    """Restart every bot that is currently running. Returns (ok, fail)."""
+    """Restart every bot across ALL PIDs (no local). Returns (ok, fail)."""
     ok = fail = 0
-    for bid in list(RUNNING.keys()):
-        b = find_bot(bid)
+    try:
+        bids = list((db_load_ro().get("bots", {}) or {}).keys())
+    except Exception:
+        bids = []
+    for bid in bids:
+        try:
+            b = find_bot(bid)
+        except Exception:
+            b = None
         if not b:
+            continue
+        if (b.get("status") != "running" and not b.get("vm_id")):
             continue
         try:
             r = restart_child(b)
@@ -11142,19 +11251,51 @@ def _do_restart_all_bots(admin_uid: int) -> Tuple[int, int]:
                 fail += 1
         except Exception:
             fail += 1
+    # purge any stray local procs (should be none — no local hosting)
+    try:
+        for bid in list(RUNNING.keys()):
+            try:
+                _stop_child_local(bid, manual=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
     audit(admin_uid, "restart_all_bots", f"ok={ok} fail={fail}")
     return ok, fail
 
 
 def _do_stop_all_bots(admin_uid: int) -> int:
+    """Stop every bot across ALL PIDs (admin stop-all). No local hosting."""
     n = 0
-    for bid in list(RUNNING.keys()):
+    try:
+        bids = list((db_load_ro().get("bots", {}) or {}).keys())
+    except Exception:
+        bids = []
+    for bid in bids:
         try:
             r = stop_child(bid, manual=True)
             if r.get("ok"):
                 n += 1
         except Exception:
             pass
+    # also purge PIDs directly in case DB is out of sync
+    try:
+        if _ADDONS_OK and _vmc is not None:
+            for vm_id, vm in _vm_nodes().items():
+                try:
+                    res = _vmc.list_bots(vm["url"], vm.get("secret", ""))
+                except Exception:
+                    continue
+                for rb in (res.get("bots") or [] if isinstance(res, dict) else []):
+                    try:
+                        bid = rb.get("bot_id")
+                        if bid and bid not in bids:
+                            _vmc.stop(vm["url"], vm.get("secret", ""), bid)
+                            n += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
     audit(admin_uid, "stop_all_bots", f"stopped={n}")
     return n
 
@@ -12793,7 +12934,7 @@ def _handle_bot_upload(m: types.Message) -> None:
                 )
                 kb = types.InlineKeyboardMarkup()
                 for b in sorted(bots, key=lambda x: x.get("name", "")):
-                    running = b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None
+                    running = b.get("status") == "running"
                     mark = G["play"] if running else G["stop"]
                     kb.add(Btn(
                         f"{mark}  {sc(b['name'])[:30]}",
@@ -16364,7 +16505,7 @@ def render_main_menu(chat_id: int, uid: int,
     u = db_load()["users"].get(str(uid)) or {}
     plan = PLAN_LIMITS.get(u.get("plan", "free"), PLAN_LIMITS["free"])
     bots = list_user_bots(uid)
-    running = sum(1 for b in bots if b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None)
+    running = sum(1 for b in bots if b.get("status") == "running")
     intro_block = f"{intro}\n{G['div']}\n" if intro else ""
     custom_welcome = get_setting("custom_welcome", None)
     welcome_line = esc(custom_welcome) if custom_welcome else f"{sc('Welcome')}, <b>{esc(u.get('name') or 'friend')}</b>"
@@ -16399,7 +16540,7 @@ def render_bots_menu(call: types.CallbackQuery) -> None:
         cap += f"\n{sc('No bots yet. Tap Upload to begin')}."
     else:
         for b in sorted(bots, key=lambda x: x.get("name", "")):
-            running = b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None
+            running = b.get("status") == "running"
             mark = G["play"] if running else G["stop"]
             src_mark = " \U0001f419" if b.get("source") in ("github", "github_browser") else ""
             kb.add(Btn(f"{mark}  {sc(b['name'])[:30]}{src_mark}",
@@ -16671,7 +16812,7 @@ def render_user_stats(call: types.CallbackQuery) -> None:
     u = d["users"][str(uid)]
     p = PLAN_LIMITS.get(u.get("plan", "free"), PLAN_LIMITS["free"])
     bots = list_user_bots(uid)
-    running = sum(1 for b in bots if b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None)
+    running = sum(1 for b in bots if b.get("status") == "running")
     pays = [x for x in d.get("payments", []) if x.get("uid") == uid and x.get("status") == "approved"]
     tickets = d.get("tickets", {})
     my_tickets = [t for t in tickets.values() if t.get("uid") == uid]
@@ -17225,17 +17366,34 @@ def render_adm_users(call: types.CallbackQuery) -> None:
 
 
 def render_adm_allbots(call: types.CallbackQuery) -> None:
-    d = db_load()["bots"]
-    items = list(d.values())[:25]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{b['_id']}</code> \u2014 {esc(b['name'])} "
-        f"{G['bullet']} uid {b['owner']} "
-        f"{'&#x25B6;' if b['_id'] in RUNNING and RUNNING[b['_id']]['proc'].poll() is None else '&#x23F9;'}"
-        f"{' 🐙' if b.get('source') in ('github','github_browser') else ''}"
-        for b in items
-    ) or f"<i>{sc('no bots')}</i>"
+    # All bots from ALL PIDs (live) + DB. No local RUNNING — PIDs are truth.
+    agg = _pid_fetch_all_bots()
+    try:
+        d = db_load_ro().get("bots", {}) or {}
+    except Exception:
+        d = {}
+    for bid, b in (d.items() if isinstance(d, dict) else []):
+        if bid not in agg:
+            try:
+                agg[bid] = {"vm_id": b.get("vm_id"), "live": None, "record": b}
+            except Exception:
+                pass
+    items = list(agg.values())[:25]
+    def _row(e: Dict[str, Any]) -> str:
+        rec = e.get("record") or {}
+        live = e.get("live") or {}
+        bid = rec.get("_id") or live.get("bot_id") or "?"
+        name = rec.get("name") or live.get("bot_id") or "?"
+        owner = rec.get("owner") or "?"
+        vm_id = e.get("vm_id") or rec.get("vm_id") or "?"
+        status = (live.get("status") if isinstance(live, dict) else None) or rec.get("status") or "idle"
+        icon = "&#x25B6;" if status == "running" else "&#x23F9;"
+        src = " 🐙" if rec.get("source") in ("github", "github_browser") else ""
+        return (f"{G['bullet']} <code>{esc(bid)}</code> — {esc(name)} "
+                f"{G['bullet']} uid {esc(owner)} {icon}{src} {G['bullet']} {esc(vm_id)}")
+    rows = "\n".join(_row(e) for e in items) or f"<i>{sc('no bots')}</i>"
     cap = (
-        f"<b>{G['diamond']} {sc('All Bots')} ({len(d)})</b>\n"
+        f"<b>{G['diamond']} {sc('All Bots')} ({len(agg)})</b>\n"
         f"{G['div_eq']}\n{rows}\n{G['div']}{FOOTER}"
     )
     show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
