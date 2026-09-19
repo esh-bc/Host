@@ -3709,9 +3709,12 @@ def stop_child(bot_id: str, manual: bool = True) -> Dict[str, Any]:
 
 
 def delete_bot_doc(bot_id: str) -> None:
-    """Delete from PID + MongoDB + local record. PID is source of truth."""
+    """Permanent delete: PID + MongoDB + local files + GitHub backup."""
     try:
         b = find_bot(bot_id)
+    except Exception:
+        b = None
+    try:
         if b and b.get("vm_id") and _ADDONS_OK and _vmc is not None:
             vm = _vm_get(b["vm_id"])
             if vm:
@@ -3731,6 +3734,27 @@ def delete_bot_doc(bot_id: str) -> None:
                 _mdb.delete_bot_file(bot_id)
             except Exception:
                 pass
+    except Exception:
+        pass
+    try:
+        if b:
+            for f in b.get("enc_files") or []:
+                try:
+                    Path(f["enc_path"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            try:
+                rmrf(b.get("dir") or "")
+            except Exception:
+                pass
+            try:
+                threading.Thread(target=_gh_delete_bot_files, args=(b,), daemon=True).start()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        pending_remove(bot_id)
     except Exception:
         pass
     return _delete_bot_doc_local(bot_id)
