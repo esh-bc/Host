@@ -539,6 +539,55 @@ def list_uris() -> list[dict]:
     return result
 
 
+def totals() -> dict:
+    """Aggregate totals across every URI (for Mongo menu header)."""
+    uris = list_uris()
+    n = len(uris)
+    used = round(sum(u.get("used_mb", 0) for u in uris), 1)
+    free = round(n * MONGO_LIMIT_MB - used, 1)
+    online = sum(1 for u in uris if u.get("online"))
+    return {"uris": n, "limit_mb": MONGO_LIMIT_MB, "used_mb": used,
+            "free_mb": free, "online": online}
+
+
+def uri_details(index: int) -> dict:
+    """Fetch all details for one URI: stats + per-collection counts."""
+    with _pool_lock:
+        entry = next((e for e in _pool if e.get("index") == index), None)
+    if not entry:
+        return {"ok": False, "error": "URI not found"}
+    client = entry["client"]
+    try:
+        client.admin.command("ping")
+        online = True
+    except Exception as e:
+        return {"ok": False, "error": f"offline: {e}"}
+    try:
+        stats = client[DB_NAME].command("dbStats")
+    except Exception:
+        stats = {}
+    cols = {}
+    for c in ("users", "hosted_bots", "vms", "settings", "system_logs",
+              "db_uris", "counters", "fs.files", "fs.chunks"):
+        try:
+            cols[c] = client[DB_NAME][c].count_documents({})
+        except Exception:
+            cols[c] = -1
+    try:
+        running = client[DB_NAME]["hosted_bots"].count_documents({"status": "running"})
+    except Exception:
+        running = -1
+    used_mb = _get_used_mb(client)
+    return {"ok": True, "index": entry["index"], "masked": _mask(entry["uri"]),
+            "primary": entry["index"] == 1, "state": entry["state"], "online": online,
+            "used_mb": round(used_mb, 1), "free_mb": round(MONGO_LIMIT_MB - used_mb, 1),
+            "limit_mb": MONGO_LIMIT_MB,
+            "storage_mb": round((stats.get("storageSize", 0) or 0) / 1048576, 1),
+            "data_mb": round((stats.get("dataSize", 0) or 0) / 1048576, 1),
+            "indexes_mb": round((stats.get("indexSize", 0) or 0) / 1048576, 1),
+            "collections": cols, "running_bots": running}
+
+
 # ────────────────────────────────────────────────────────────────
 #  USER OPERATIONS
 # ────────────────────────────────────────────────────────────────

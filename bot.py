@@ -2321,14 +2321,19 @@ def render_adm_mongo(call: types.CallbackQuery) -> None:
         return
     try:
         uris = _mdb.list_uris()
+        tot = _mdb.totals()
     except Exception as e:
         ack(call, f"DB error: {e}"); return
-    rows = [f"<b>🗄️ {sc('Mongo Connections')} ({len(uris)})</b>\n{G['div_eq']}"]
+    rows = [f"<b>🗄️ {sc('Mongo Connections')} ({len(uris)})</b>\n{G['div_eq']}",
+            f"{bullet('Total Free', str(tot.get('free_mb', 0)) + ' MB')}",
+            f"{bullet('Total Used', str(tot.get('used_mb', 0)) + ' MB')}",
+            f"{bullet('Online', str(tot.get('online', 0)) + ' / ' + str(tot.get('uris', 0)))}"]
     kb = types.InlineKeyboardMarkup(row_width=1)
     for u in uris:
         icon = "🟢" if u.get("online") else "🔴"
         rows.append(f"{icon} <code>{esc(u.get('masked', ''))}</code> [{u.get('state', '?')}] "
-                    f"{u.get('used_mb', 0)}MB / {512}MB")
+                    f"{u.get('used_mb', 0)}MB / {512}MB — free {u.get('free_mb', 0)}MB")
+        kb.add(Btn(f"{icon} URI #{u.get('index')} — free {u.get('free_mb', 0)}MB", callback_data=f"adm_mongo_info:{u.get('index')}"))
         if not u.get("primary"):
             kb.add(Btn(f"{G['trash']}  {sc('Remove')} #{u.get('index')}", callback_data=f"adm_mongo_remove:{u.get('index')}"))
     kb2 = types.InlineKeyboardMarkup(row_width=2)
@@ -2340,6 +2345,34 @@ def render_adm_mongo(call: types.CallbackQuery) -> None:
         kb2.keyboard.append(r)
     kb2.add(Btn(f"{G['back']}  {sc('Admin')}", callback_data="menu_admin", style="primary"))
     show_menu(call.message.chat.id, PHOTOS["admin"], "\n".join(rows) + f"\n{G['div']}{FOOTER}", kb2, call=call)
+
+
+def render_adm_mongo_info(call: types.CallbackQuery, idx: str) -> None:
+    """Fetch all details from one Mongo URI."""
+    if not _mongo_ready():
+        ack(call, "Mongo not configured"); return
+    try:
+        det = _mdb.uri_details(int(idx))
+    except Exception as e:
+        ack(call, f"DB error: {e}"); return
+    if not det.get("ok"):
+        ack(call, det.get("error", "URI error")); return
+    icon = "🟢" if det.get("online") else "🔴"
+    cols = det.get("collections", {}) or {}
+    col_lines = "\n".join(f"{bullet(k, v)}" for k, v in cols.items())
+    cap = (f"<b>🗄️ {sc('Mongo URI')} #{det.get('index')} {icon}</b>\n{G['div_eq']}\n"
+           f"{bullet('State', det.get('state', '?'))}\n"
+           f"{bullet('Used', str(det.get('used_mb', 0)) + ' MB')}\n"
+           f"{bullet('Free', str(det.get('free_mb', 0)) + ' MB')}\n"
+           f"{bullet('Storage', str(det.get('storage_mb', 0)) + ' MB')}\n"
+           f"{bullet('Data', str(det.get('data_mb', 0)) + ' MB')}\n"
+           f"{bullet('Indexes', str(det.get('indexes_mb', 0)) + ' MB')}\n"
+           f"{bullet('Running Bots', det.get('running_bots', '?'))}\n"
+           f"{G['div']}\n<b>{sc('Collections')}</b>\n{col_lines}\n{G['div']}{FOOTER}")
+    kb = types.InlineKeyboardMarkup()
+    kb.add(Btn(f"{G['refresh']}  {sc('Refresh')}", callback_data=f"adm_mongo_info:{det.get('index')}", style="primary"))
+    kb.add(Btn(f"{G['back']}  {sc('Mongo')}", callback_data="adm_mongo", style="primary"))
+    show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
 
 
 def _vm_toggle(call: types.CallbackQuery, vm_id: str) -> None:
@@ -6634,6 +6667,8 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
         bot.send_message(call.message.chat.id, f"{G['key']} {sc('Send the MongoDB URI now')} (<code>mongodb+srv://...</code>).", parse_mode="HTML"); return
     if data.startswith("adm_mongo_remove:"):
         _mongo_remove_idx(call, data.split(":", 1)[1]); return render_adm_mongo(call)
+    if data.startswith("adm_mongo_info:"):
+        return render_adm_mongo_info(call, data.split(":", 1)[1])
     if data == "adm_security":
         return render_adm_security(call)
     if data == "adm_maint":
