@@ -22,7 +22,7 @@ except Exception:
 VM_MAX_BOTS_PER_VM     = int(os.environ.get("VM_MAX_BOTS_PER_VM", "1"))
 VM_RAM_RESERVE_MB      = int(os.environ.get("VM_RAM_RESERVE_MB", "80"))
 VM_LIGHTWEIGHT_THRESHOLD = int(os.environ.get("VM_LIGHTWEIGHT_MB", "80"))
-VM_BOT_RAM_LIMIT       = int(os.environ.get("VM_BOT_RAM_LIMIT", "250"))
+VM_BOT_RAM_LIMIT       = int(os.environ.get("VM_BOT_RAM_LIMIT", "500"))
 
 TIMEOUT = 15
 

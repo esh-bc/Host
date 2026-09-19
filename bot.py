@@ -3324,7 +3324,7 @@ def restart_child(b: Dict[str, Any]) -> Dict[str, Any]:
 #  Rules: max 1 bot per PID; pick the PID with most free RAM.
 #  No local fallback — all start/stop/logs/delete via PID + MongoDB.
 _VM_MAX_BOTS   = 1
-_VM_RAM_LIMIT  = 250
+_VM_RAM_LIMIT  = 500
 _VM_RESERVE_MB = 80
 _VM_LIGHT_MB   = 80
 
