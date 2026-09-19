@@ -2,12 +2,12 @@
   "users": {
     "8189708860": {
       "_id": 8189708860,
-      "name": "\ud80c\udda9\u273f\ud80c\uddaa \u1d07s\u029c \u2727",
+      "name": "𓆩✿𓆪 ᴇsʜ ✧",
       "username": "iam_eshh",
       "plan": "free",
       "plan_expires": null,
       "joined": "2026-09-19T05:40:24.702228+00:00",
-      "last_seen": "2026-09-19T13:16:16.626151+00:00",
+      "last_seen": "2026-09-19T13:20:17.867034+00:00",
       "banned": false,
       "ban_reason": "",
       "wallet": 0,
@@ -22,7 +22,7 @@
       "stats": {
         "commands": 0,
         "bots_uploaded": 2,
-        "logins": 39
+        "logins": 40
       }
     }
   },
