@@ -3467,6 +3467,8 @@ def _vm_deploy_bot(b: Dict[str, Any], vm: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
         # ── auto-install requirements on the PID ─────────────────
+        # If requirements.txt uploaded → install through it.
+        # Else → analyze files, scan imports, auto-install missing.
         # api-vm already installs requirements.txt from the zip, but we
         # run an explicit install too so user requirements are guaranteed.
         try:
@@ -3479,6 +3481,16 @@ def _vm_deploy_bot(b: Dict[str, Any], vm: Dict[str, Any]) -> Dict[str, Any]:
                         pkgs.append(line.split()[0])
                 if pkgs:
                     _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs)
+            else:
+                try:
+                    bot_dir2 = Path(b.get("dir") or "")
+                    if bot_dir2.exists():
+                        mods = _scan_imports(bot_dir2)
+                        pkgs2 = _filter_third_party(mods, bot_dir2)
+                        if pkgs2:
+                            _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs2[:20])
+                except Exception:
+                    pass
         except Exception:
             pass
         try:
