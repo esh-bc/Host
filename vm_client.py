@@ -15,7 +15,12 @@ import os
 import requests
 import time
 from typing import Optional
-import mongo_pool as db
+try:
+    import mongo_pool as db
+    _MONGO_OK = True
+except Exception:
+    db = None  # type: ignore
+    _MONGO_OK = False
 
 VM_MAX_BOTS_PER_VM     = int(os.environ.get("VM_MAX_BOTS_PER_VM", "3"))
 VM_RAM_RESERVE_MB      = int(os.environ.get("VM_RAM_RESERVE_MB", "80"))
@@ -139,6 +144,8 @@ def _check_vm_lightweight(vm: dict) -> bool:
     Lightweight = using less than VM_LIGHTWEIGHT_THRESHOLD MB each.
     Called only when VM already has 2 bots to decide if 3rd allowed.
     """
+    if not _MONGO_OK or db is None:
+        return True
     vm_bots = db.get_vm_bots(vm["vm_id"])
     running_bots = [b for b in vm_bots if b["status"] == "running"]
 
@@ -149,7 +156,7 @@ def _check_vm_lightweight(vm: dict) -> bool:
             return False
         ram_mb = stats.get("ram_mb", 999)
         if ram_mb > VM_LIGHTWEIGHT_THRESHOLD:
-            db.log_event("vm_check", {
+            _log("vm_check", {
                 "vm_id":  vm["vm_id"],
                 "bot_id": bot["bot_id"],
                 "ram_mb": ram_mb,
@@ -157,6 +164,14 @@ def _check_vm_lightweight(vm: dict) -> bool:
             })
             return False
     return True
+
+def _log(event: str, data: dict) -> None:
+    try:
+        if _MONGO_OK and db is not None:
+            db.log_event(event, data)
+    except Exception:
+        pass
+
 
 def find_best_vm() -> Optional[dict]:
     """
@@ -170,9 +185,11 @@ def find_best_vm() -> Optional[dict]:
       5. If VM has exactly 2 bots → ALL must be lightweight
       6. Pick VM with most free RAM
     """
+    if not _MONGO_OK or db is None:
+        return None
     vms = db.get_enabled_vms()
     if not vms:
-        db.log_event("vm_check", {"result": "no enabled VMs"})
+        _log("vm_check", {"result": "no enabled VMs"})
         return None
 
     candidates = []
@@ -180,7 +197,7 @@ def find_best_vm() -> Optional[dict]:
     for vm in vms:
         # ── Check 1: reachability ──────────────────────────────
         if not ping(vm["url"]):
-            db.log_event("vm_check", {
+            _log("vm_check", {
                 "vm_id": vm["vm_id"],
                 "result": "unreachable"
             })
@@ -189,7 +206,7 @@ def find_best_vm() -> Optional[dict]:
         # ── Check 2: bot count hard cap ────────────────────────
         bot_count = db.count_vm_running_bots(vm["vm_id"])
         if bot_count >= VM_MAX_BOTS_PER_VM:
-            db.log_event("vm_check", {
+            _log("vm_check", {
                 "vm_id":     vm["vm_id"],
                 "bot_count": bot_count,
                 "result":    f"full ({VM_MAX_BOTS_PER_VM} bot cap)",
@@ -202,7 +219,7 @@ def find_best_vm() -> Optional[dict]:
             continue
         free_ram = status.get("free_ram_mb", 0)
         if free_ram < VM_RAM_RESERVE_MB:
-            db.log_event("vm_check", {
+            _log("vm_check", {
                 "vm_id":    vm["vm_id"],
                 "free_ram": free_ram,
                 "result":   "not enough RAM",
@@ -212,7 +229,7 @@ def find_best_vm() -> Optional[dict]:
         # ── Check 4: lightweight check for 2-bot VMs ──────────
         if bot_count == VM_MAX_BOTS_PER_VM - 1:  # == 2
             if not _check_vm_lightweight(vm):
-                db.log_event("vm_check", {
+                _log("vm_check", {
                     "vm_id":  vm["vm_id"],
                     "result": "2 bots but not lightweight — rejected",
                 })
@@ -227,7 +244,7 @@ def find_best_vm() -> Optional[dict]:
         })
 
     if not candidates:
-        db.log_event("vm_check", {"result": "no eligible VMs found"})
+        _log("vm_check", {"result": "no eligible VMs found"})
         return None
 
     # Pick VM with most free RAM
@@ -239,6 +256,8 @@ def find_best_vm() -> Optional[dict]:
 
 def get_vm_for_bot(bot_id: str) -> tuple[Optional[dict], Optional[dict]]:
     """Returns (bot_record, vm_config) or (None, None)."""
+    if not _MONGO_OK or db is None:
+        return None, None
     bot = db.get_bot(bot_id)
     if not bot:
         return None, None

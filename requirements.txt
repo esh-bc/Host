@@ -7,3 +7,4 @@ PyGithub
 psutil
 Pillow
 curl_cffi
+pymongo
