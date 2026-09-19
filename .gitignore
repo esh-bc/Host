@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+.env.*
+*.log
+storage/logs/
+storage/encfiles/
+storage/data/keycache/
+storage/uploads/
+sandbox/
+.vscode/
+.idea/
+*.tmp
+*.corrupt

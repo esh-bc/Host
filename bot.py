@@ -6668,7 +6668,7 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
     if data.startswith("adm_mongo_remove:"):
         _mongo_remove_idx(call, data.split(":", 1)[1]); return render_adm_mongo(call)
     if data.startswith("adm_mongo_info:"):
-        return render_adm_mongo_info(call, data.split(":", 1)[1])
+        ack(call, "Fetching URI details…"); return render_adm_mongo_info(call, data.split(":", 1)[1])
     if data == "adm_security":
         return render_adm_security(call)
     if data == "adm_maint":
@@ -17985,6 +17985,8 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
         bot.send_message(call.message.chat.id, f"{G['key']} {sc('Send the MongoDB URI now')} (<code>mongodb+srv://...</code>).", parse_mode="HTML"); return
     if data.startswith("adm_mongo_remove:"):
         _mongo_remove_idx(call, data.split(":", 1)[1]); return render_adm_mongo(call)
+    if data.startswith("adm_mongo_info:"):
+        ack(call, "Fetching URI details…"); return render_adm_mongo_info(call, data.split(":", 1)[1])
     if data == "adm_security":           return render_adm_security(call)
     if data == "adm_maint":              return render_adm_maintenance(call)
     if data == "adm_settings":           return render_adm_settings(call)
