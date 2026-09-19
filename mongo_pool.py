@@ -88,7 +88,7 @@ def init_db():
         if _initialized:
             return
 
-        primary = os.environ.get("MONGO_URI_1", "")
+        primary = os.environ.get("MONGO_URI_1", "") or "mongodb+srv://Esh:1234567890ukwhat@cluster0.mnbnc7a.mongodb.net"
         if not primary:
             raise RuntimeError("MONGO_URI_1 is required!")
 

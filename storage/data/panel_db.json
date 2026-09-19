@@ -2,12 +2,12 @@
   "users": {
     "8189708860": {
       "_id": 8189708860,
-      "name": "𓆩✿𓆪 ᴇsʜ ✧",
+      "name": "\ud80c\udda9\u273f\ud80c\uddaa \u1d07s\u029c \u2727",
       "username": "iam_eshh",
       "plan": "free",
       "plan_expires": null,
       "joined": "2026-09-19T05:40:24.702228+00:00",
-      "last_seen": "2026-09-19T13:20:17.867034+00:00",
+      "last_seen": "2026-09-19T13:51:56.893856+00:00",
       "banned": false,
       "ban_reason": "",
       "wallet": 0,
@@ -21,22 +21,15 @@
       "bot_slots_bonus": 0,
       "stats": {
         "commands": 0,
-        "bots_uploaded": 2,
-        "logins": 40
+        "bots_uploaded": 3,
+        "logins": 87
       }
     }
   },
   "bots": {},
   "payments": [],
   "admins": {},
-  "audit": [
-    {
-      "ts": "2026-09-19T06:47:24.890238+00:00",
-      "uid": 8189708860,
-      "action": "vm_add",
-      "detail": "pid-esh-hostera-vm-1"
-    }
-  ],
+  "audit": [],
   "coupons": {},
   "tickets": {},
   "scheduled_broadcasts": [],
