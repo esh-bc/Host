@@ -584,15 +584,22 @@ SUPPORT_USR = "@iam_eshh"
 UPDATE_CH   = "https://t.me/eshxbots"
 FOOTER      = f"\n\n<blockquote>{BRAND_TAG}</blockquote>"
 
-# ── START VIDEO (/start main menu) ──
-# Video sent by owner 8189708860 as custom_main.mp4 (11s, 1280x720).
-# file_id is primary (instant, no re-upload). Local mp4 is fallback for
-# redeploys / file_id expiry. Set START_USE_VIDEO=False to revert to photo.
+# ── START VIDEO (/start main menu) — AUTOPLAY ANIMATION ──
+# Original: owner 8189708860 custom_main.mp4 (11s, 1280x720, with audio).
+# Telegram videos with audio need a tap to play. Muted mp4 sent as
+# animation autoplays + loops with no click, and keeps playing on back.
+# file_id is primary (instant). Local mp4 is fallback for redeploys.
+# Set START_USE_VIDEO=False to revert to photo.
 START_VIDEO_FILE_ID = os.environ.get(
     "START_VIDEO_FILE_ID",
     "BAACAgUAAxkDAAID12qucA1R0WLZ0Gj86p3UFjEAAY7yHwACSSQAAi_zcFWDCm3ZKQ5twj0E",
 ).strip()
+START_ANIMATION_FILE_ID = os.environ.get(
+    "START_ANIMATION_FILE_ID",
+    "CgACAgUAAxkDAAID52qugcENIJKhnVRzi3nC_S2p3RaQAAKWJAACL_NwVauImv3F4MxWPQQ",
+).strip()
 START_VIDEO_LOCAL = BASE_DIR / "storage" / "videos" / "start.mp4"
+START_ANIMATION_LOCAL = BASE_DIR / "storage" / "videos" / "start_autoplay.mp4"
 START_USE_VIDEO = os.environ.get("START_USE_VIDEO", "1").strip().lower() not in ("0", "false", "no", "off")
 _VIDEO_FILE_IDS: Dict[str, str] = {}
 
@@ -904,21 +911,30 @@ def _remember_file_id(ref: str, msg) -> None:
 
 
 def _get_start_video_ref() -> Optional[str]:
-    """Return best video ref for /start, or None to fallback to photo."""
+    """Return best autoplay animation ref for /start, or None to fallback to photo.
+    Prefers muted animation (autoplay, no click) over original video."""
     if not START_USE_VIDEO:
         return None
-    # 1. explicit file_id (fastest, survives redeploys)
+    # 1. animation file_id first (muted, autoplay + loop)
+    if START_ANIMATION_FILE_ID:
+        return START_ANIMATION_FILE_ID
+    # 2. local muted mp4 fallback
+    try:
+        if START_ANIMATION_LOCAL.exists() and START_ANIMATION_LOCAL.stat().st_size > 1024:
+            return str(START_ANIMATION_LOCAL)
+    except Exception:
+        pass
+    # 3. original video file_id (needs click, but better than photo)
     if START_VIDEO_FILE_ID:
         return START_VIDEO_FILE_ID
-    # 2. local mp4 fallback
     try:
         if START_VIDEO_LOCAL.exists() and START_VIDEO_LOCAL.stat().st_size > 1024:
             return str(START_VIDEO_LOCAL)
     except Exception:
         pass
-    # 3. setting override (admin can rotate without redeploy)
+    # 4. setting override (admin can rotate without redeploy)
     try:
-        v = get_setting("start_video_file_id", "")
+        v = get_setting("start_video_file_id", "") or get_setting("start_animation_file_id", "")
         if v:
             return str(v).strip()
     except Exception:
@@ -927,12 +943,13 @@ def _get_start_video_ref() -> Optional[str]:
 
 
 def _resolve_video(ref: str):
-    """Convert video ref to telebot-sendable: cached file_id → file_id → local file."""
+    """Convert video/animation ref to telebot-sendable: cached → file_id → local file."""
     fid = _VIDEO_FILE_IDS.get(ref)
     if fid:
         return fid
     # Telegram file_ids are long opaque strings (not paths/URLs)
-    if isinstance(ref, str) and (ref.startswith("BAAC") or len(ref) > 40):
+    # BAAC = video, CgAC = animation/document
+    if isinstance(ref, str) and (ref.startswith("BAAC") or ref.startswith("CgAC") or len(ref) > 40):
         return ref
     if isinstance(ref, str) and ref.startswith(("http://", "https://")):
         return ref
@@ -944,7 +961,9 @@ def _resolve_video(ref: str):
 
 def _remember_video_file_id(ref: str, msg) -> None:
     try:
-        if msg and getattr(msg, "video", None):
+        if msg and getattr(msg, "animation", None):
+            _VIDEO_FILE_IDS[ref] = msg.animation.file_id
+        elif msg and getattr(msg, "video", None):
             _VIDEO_FILE_IDS[ref] = msg.video.file_id
         elif msg and getattr(msg, "document", None):
             try:
@@ -1816,8 +1835,9 @@ def show_start_menu(
     call: Optional[types.CallbackQuery] = None,
     photo_fallback: str = "",
 ) -> None:
-    """Start-menu sender: video if configured, else photo fallback.
-    Uses same delete-after-send safety as show_menu."""
+    """Start-menu sender: autoplay animation if configured, else photo fallback.
+    Animation (muted mp4) autoplays + loops with no click, and keeps playing
+    when navigating back. Uses same delete-after-send safety as show_menu."""
     vref = _get_start_video_ref()
     if not vref:
         show_menu(chat_id, photo_fallback, caption, kb, call=call)
@@ -1827,12 +1847,13 @@ def show_start_menu(
         _cancel_loading(call.message.chat.id, call.message.message_id)
 
     # 1. Try in-place edit when previous message has media.
-    if call and call.message and call.message.content_type in ("photo", "video"):
+    # Animation type keeps autoplay on back-navigation.
+    if call and call.message and call.message.content_type in ("photo", "video", "animation"):
         msg = call.message
         media_ref = _resolve_video(vref)
         try:
             bot.edit_message_media(
-                media=types.InputMediaVideo(media_ref, caption=cap, parse_mode="HTML"),
+                media=types.InputMediaAnimation(media_ref, caption=cap, parse_mode="HTML"),
                 chat_id=chat_id,
                 message_id=msg.message_id,
                 reply_markup=kb,
@@ -1841,15 +1862,32 @@ def show_start_menu(
         except ApiTelegramException as e:
             if "message is not modified" in str(e).lower():
                 return
-            _log_err("edit_message_media(video)", e)
+            _log_err("edit_message_media(animation)", e)
         except Exception as e:
-            _log_err("edit_message_media(video)", e)
+            _log_err("edit_message_media(animation)", e)
         finally:
             try:
                 if hasattr(media_ref, "close"):
                     media_ref.close()
             except Exception:
                 pass
+        # video-type fallback if animation edit rejected (old video file_id)
+        try:
+            media_ref2 = _resolve_video(vref)
+            bot.edit_message_media(
+                media=types.InputMediaVideo(media_ref2, caption=cap, parse_mode="HTML"),
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                reply_markup=kb,
+            )
+            try:
+                if hasattr(media_ref2, "close"):
+                    media_ref2.close()
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            _log_err("edit_message_media(video-fallback)", e)
         # caption-only fallback (keeps old media, updates text+buttons)
         try:
             bot.edit_message_caption(
@@ -1860,15 +1898,24 @@ def show_start_menu(
         except Exception as e:
             _log_err("edit_message_caption(start)", e)
 
-    # 2. Send new video first, then delete old.
+    # 2. Send new animation first (autoplay, no click), then delete old.
     new_msg_id: Optional[int] = None
     try:
-        m = bot.send_video(chat_id, _resolve_video(vref), caption=cap,
-                           parse_mode="HTML", reply_markup=kb)
+        m = bot.send_animation(chat_id, _resolve_video(vref), caption=cap,
+                               parse_mode="HTML", reply_markup=kb)
         new_msg_id = m.message_id
         _remember_video_file_id(vref, m)
     except Exception as e:
-        _log_err("send_video(start)", e)
+        _log_err("send_animation(start)", e)
+    # fallback to send_video if animation send fails
+    if new_msg_id is None:
+        try:
+            m = bot.send_video(chat_id, _resolve_video(vref), caption=cap,
+                               parse_mode="HTML", reply_markup=kb)
+            new_msg_id = m.message_id
+            _remember_video_file_id(vref, m)
+        except Exception as e:
+            _log_err("send_video(start)", e)
 
     if new_msg_id is None and photo_fallback:
         show_menu(chat_id, photo_fallback, caption, kb, call=call)
