@@ -3492,7 +3492,28 @@ def _vm_deploy_bot(b: Dict[str, Any], vm: Dict[str, Any]) -> Dict[str, Any]:
                     bot_dir2 = Path(b.get("dir") or "")
                     if bot_dir2.exists():
                         mods = _scan_imports(bot_dir2)
-                        pkgs2 = _filter_third_party(mods, bot_dir2)
+                        # PID has a FRESH venv — do NOT filter by main-bot
+                        # importability. Only drop stdlib + local names.
+                        stdlib = set(getattr(sys, "stdlib_module_names", set())) | {"__future__", ""}
+                        local = set()
+                        try:
+                            for child in bot_dir2.iterdir():
+                                if child.suffix == ".py":
+                                    local.add(child.stem)
+                                elif child.is_dir() and (child / "__init__.py").exists():
+                                    local.add(child.name)
+                        except Exception:
+                            pass
+                        pkgs2 = []
+                        seen2 = set()
+                        for m in mods:
+                            if not m or m in stdlib or m in local:
+                                continue
+                            pip_name = _PYPI_ALIAS.get(m, m)
+                            if pip_name in seen2:
+                                continue
+                            seen2.add(pip_name)
+                            pkgs2.append(pip_name)
                         if pkgs2:
                             _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs2[:20])
                 except Exception:
