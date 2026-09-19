@@ -13837,7 +13837,7 @@ def main() -> int:
     try:
         bot.remove_webhook()
         try:
-            bot.delete_webhook(drop_pending_updates=True)
+            bot.delete_webhook(drop_pending_updates=False)
         except Exception:
             pass
         print("[bot] webhook cleared")
@@ -13847,7 +13847,7 @@ def main() -> int:
     print("[bot] polling...")
     while True:
         try:
-            bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=25)
+            bot.infinity_polling(skip_pending=False, timeout=30, long_polling_timeout=25, allowed_updates=["message", "callback_query"])
         except KeyboardInterrupt:
             print("\n[bot] stopping...")
             for bid in list(RUNNING.keys()):
@@ -19786,7 +19786,7 @@ def main() -> int:
     print("[bot] polling\u2026", flush=True)
     while True:
         try:
-            bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=25)
+            bot.infinity_polling(skip_pending=False, timeout=30, long_polling_timeout=25, allowed_updates=["message", "callback_query"])
         except KeyboardInterrupt:
             print("\n[bot] stopping\u2026", flush=True)
             for bid in list(RUNNING.keys()):
