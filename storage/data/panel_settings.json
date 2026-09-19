@@ -1,0 +1,23 @@
+{
+  "metrics_total": {
+    "messages_received": 0,
+    "callbacks_received": 0,
+    "bot_starts": 0,
+    "bot_stops": 0,
+    "bot_crashes": 0,
+    "uploads": 0,
+    "errors": 0,
+    "commands": 0,
+    "plan_upgrades": 0,
+    "payments_received": 0
+  },
+  "vm_nodes": {
+    "pid-esh-hostera-vm-1": {
+      "vm_id": "pid-esh-hostera-vm-1",
+      "url": "https://api-vm-uajt.onrender.com",
+      "secret": "esh-hostera-secret-2026",
+      "enabled": true,
+      "added_at": "2026-09-19T06:47:24.889187+00:00"
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "users": {
+    "8189708860": {
+      "_id": 8189708860,
+      "name": "𓆩✿𓆪 ᴇsʜ ✧",
+      "username": "iam_eshh",
+      "plan": "free",
+      "plan_expires": null,
+      "joined": "2026-09-19T05:40:24.702228+00:00",
+      "last_seen": "2026-09-19T06:52:05.362616+00:00",
+      "banned": false,
+      "ban_reason": "",
+      "wallet": 0,
+      "kyc": false,
+      "verified": false,
+      "verified_at": null,
+      "ref_by": null,
+      "ref_count": 0,
+      "ref_credit": 0,
+      "trial_used": false,
+      "bot_slots_bonus": 0,
+      "stats": {
+        "commands": 0,
+        "bots_uploaded": 1,
+        "logins": 37
+      }
+    }
+  },
+  "bots": {
+    "1c3e12eb76c260e8": {
+      "_id": "1c3e12eb76c260e8",
+      "owner": 8189708860,
+      "name": "main_1",
+      "dir": "/root/host-main/sandbox/8189708860_1c3e12eb76c260e8",
+      "created": "2026-09-19T06:50:55.093877+00:00",
+      "enc_files": [],
+      "env": {},
+      "status": "stopped",
+      "cron": {},
+      "gh_synced_at": 0
+    }
+  },
+  "payments": [],
+  "admins": {},
+  "audit": [
+    {
+      "ts": "2026-09-19T06:47:24.890238+00:00",
+      "uid": 8189708860,
+      "action": "vm_add",
+      "detail": "pid-esh-hostera-vm-1"
+    }
+  ],
+  "coupons": {},
+  "tickets": {},
+  "scheduled_broadcasts": [],
+  "notes": {},
+  "rate_violations": {},
+  "scan_log": []
+}
