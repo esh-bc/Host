@@ -3517,6 +3517,11 @@ def _vm_deploy_bot(b: Dict[str, Any], vm: Dict[str, Any]) -> Dict[str, Any]:
                     if line and not line.startswith(("#", "-")):
                         pkgs.append(line.split()[0])
                 if pkgs:
+                    low = [p.lower() for p in pkgs]
+                    if any("pymongo" in p for p in low):
+                        for extra in ("certifi", "dnspython"):
+                            if extra not in low:
+                                pkgs.append(extra)
                     _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs)
             else:
                 try:
@@ -3546,7 +3551,12 @@ def _vm_deploy_bot(b: Dict[str, Any], vm: Dict[str, Any]) -> Dict[str, Any]:
                             seen2.add(pip_name)
                             pkgs2.append(pip_name)
                         if pkgs2:
-                            _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs2[:20])
+                            low2 = [p.lower() for p in pkgs2]
+                            if any("pymongo" in p for p in low2):
+                                for extra in ("certifi", "dnspython"):
+                                    if extra not in low2:
+                                        pkgs2.append(extra)
+                            _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs2[:22])
                 except Exception:
                     pass
         except Exception:
