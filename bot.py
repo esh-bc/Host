@@ -3497,17 +3497,15 @@ def _is_full_error(res: Dict[str, Any]) -> bool:
 
 
 def _notify_pid_full(owner_id: int, bot_name: str, detail: str = "") -> None:
-    """Tell the user PIDs are full + alert all admins. PID-only hosting:
-    local subprocess fallback is disabled, so FULL is user-facing."""
+    """User says VMs (not PIDs). Tell user VMs full + alert admins."""
     try:
         bot.send_message(
             owner_id,
-            f"<b>⏳ {sc('PIDs Currently Full')}</b>\n"
+            f"<b>⏳ {sc('Current all VMs are full')}</b>\n"
             f"{G['div']}\n"
             f"{bullet('Bot', bot_name)}\n"
-            f"{bullet('Detail', detail or sc('All hosting PIDs are full'))}\n"
             f"{G['div']}\n"
-            f"{sc('Your bot is saved. Start it again from My Bots when space frees up')}.",
+            f"{sc('Check back later, we will add new VMs within 24 hours')}.",
             parse_mode="HTML",
         )
     except Exception:
@@ -3529,11 +3527,12 @@ def _notify_pid_full(owner_id: int, bot_name: str, detail: str = "") -> None:
         try:
             bot.send_message(
                 tgt,
-                f"<b>🚨 {sc('PID Cluster Full')}</b>\n"
+                f"<b>🚨 {sc('All VMs Full')}</b>\n"
                 f"{G['div']}\n"
                 f"{bullet('User ID', owner_id)}\n"
                 f"{bullet('Bot', bot_name)}\n"
                 f"{bullet('Detail', detail or '—')}\n"
+                f"{bullet('Action', sc('Add new VMs within 24 hours'))}\n"
                 f"{G['div']}",
                 parse_mode="HTML",
             )
@@ -3581,8 +3580,8 @@ def start_child(b: Dict[str, Any]) -> Dict[str, Any]:
                 if res.get("ok"):
                     return res
                 return {"ok": False, "error": str(res.get("error", "FULL: deploy failed"))}
-            return {"ok": False, "error": "FULL: All hosting PIDs are full right now."}
-    return {"ok": False, "error": "FULL: PID cluster not configured. Contact admin."}
+            return {"ok": False, "error": "FULL: Current all VMs are full. Check back later, we will add new VMs within 24 hours."}
+    return {"ok": False, "error": "FULL: VMs not configured. Contact admin."}
 
 
 def stop_child(bot_id: str, manual: bool = True) -> Dict[str, Any]:
@@ -6093,13 +6092,14 @@ def action_bot_logs(call: types.CallbackQuery, bot_id: str) -> None:
         ack(call, "Not found"); return
     if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
         ack(call, "Not yours"); return
-    info = RUNNING.get(bot_id)
-    log = info["log"] if info else []
-    last = log[-MAX_LOG_SEND:] if log else [f"({sc('no logs yet')})"]
+    ack(call, "Fetching logs…")
+    logs = tail_log(bot_id, lines=60)
+    if not logs:
+        logs = "(no output yet)"
     txt = (
         f"<b>{G['bolt']} {sc('Live Logs')} — {esc(b['name'])}</b>\n"
         f"{G['div_eq']}\n<pre>"
-        + esc("\n".join(last))[:3500]
+        + esc(logs[-3500:])
         + f"</pre>\n{G['div']}{FOOTER}"
     )
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -12946,7 +12946,7 @@ def _handle_bot_upload(m: types.Message) -> None:
                 bot.send_message(cid, cap + FOOTER, parse_mode="HTML", reply_markup=kb)
             else:
                 if _is_full_error(res):
-                    _edit(0, f"<b>⏳ {sc('PIDs Currently Full')}</b>\n{sc('Your bot is saved — try starting again later from My Bots')}.")
+                    _edit(0, f"<b>⏳ {sc('Current all VMs are full')}</b>\n{sc('Check back later, we will add new VMs within 24 hours')}.")
                     _notify_pid_full(uid, name, str(res.get("error", ""))[5:])
                 else:
                     _edit(0,
