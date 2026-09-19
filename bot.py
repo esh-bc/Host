@@ -3650,6 +3650,14 @@ def start_child(b: Dict[str, Any]) -> Dict[str, Any]:
                         return {"ok": True, "vm": vm_id}
                 except Exception:
                     pass
+                # Auto recovery: PID wiped/redeployed so bot files are gone —
+                # re-upload everything automatically (with deps).
+                try:
+                    res = _vm_deploy_bot(b, vm)
+                    if res.get("ok"):
+                        return res
+                except Exception:
+                    pass
         else:
             try:
                 best = _vm_pick_best()
