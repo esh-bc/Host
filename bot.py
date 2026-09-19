@@ -11688,6 +11688,11 @@ def on_text(m: types.Message) -> None:
                     nodes[vm_id] = {"vm_id": vm_id, "url": url_, "secret": secret_,
                                     "enabled": True, "added_at": ts_iso()}
                     _vm_save_nodes(nodes)
+                    try:
+                        if _mdb is not None and _mongo_ready():
+                            _mdb.save_vm({"vm_id": vm_id, "url": url_, "secret": secret_, "enabled": True})
+                    except Exception:
+                        pass
                     audit(uid_, "vm_add", vm_id)
                     bot.send_message(chat_, f"{G['ok']} <b>{sc('VM added')}</b>\n{bullet('ID', vm_id)}\n{bullet('Free', str(status.get('free_ram_mb')) + ' MB')}", parse_mode="HTML")
                 except Exception as e:
@@ -19305,6 +19310,11 @@ def on_text(m: types.Message) -> None:
                     nodes[vm_id] = {"vm_id": vm_id, "url": url_, "secret": secret_,
                                     "enabled": True, "added_at": ts_iso()}
                     _vm_save_nodes(nodes)
+                    try:
+                        if _mdb is not None and _mongo_ready():
+                            _mdb.save_vm({"vm_id": vm_id, "url": url_, "secret": secret_, "enabled": True})
+                    except Exception:
+                        pass
                     audit(uid_, "vm_add", vm_id)
                     bot.send_message(chat_, f"{G['ok']} <b>{sc('VM added')}</b>\n{bullet('ID', vm_id)}\n{bullet('Free', str(status.get('free_ram_mb')) + ' MB')}", parse_mode="HTML")
                 except Exception as e:
