@@ -28,17 +28,22 @@ from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 # ── Remote-VM + Mongo-pool addons (vm_client.py / mongo_pool.py) ──
-# Optional: admin VM Nodes + Mongo DB manager. If the modules are
-# missing the bot boots normally and the panels show "not installed".
+# Split imports so PIDs work even if Mongo is missing/broken.
 try:
     import vm_client as _vmc
-    import mongo_pool as _mdb
-    _ADDONS_OK = True
-except Exception as _addon_err:
+    _VMC_OK = True
+except Exception as _vmc_err:
     _vmc = None  # type: ignore
+    _VMC_OK = False
+    print(f"[addons] vm_client unavailable: {_vmc_err}", file=sys.stderr, flush=True)
+try:
+    import mongo_pool as _mdb
+    _MDB_OK = True
+except Exception as _mdb_err:
     _mdb = None  # type: ignore
-    _ADDONS_OK = False
-    print(f"[addons] vm_client/mongo_pool unavailable: {_addon_err}", file=sys.stderr, flush=True)
+    _MDB_OK = False
+    print(f"[addons] mongo_pool unavailable: {_mdb_err}", file=sys.stderr, flush=True)
+_ADDONS_OK = bool(_VMC_OK)
 
 
 _REQUIRED_PKGS = [
