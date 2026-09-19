@@ -3522,7 +3522,11 @@ def _vm_deploy_bot(b: Dict[str, Any], vm: Dict[str, Any]) -> Dict[str, Any]:
                         for extra in ("certifi", "dnspython"):
                             if extra not in low:
                                 pkgs.append(extra)
-                    _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs)
+                    try:
+                        pr = _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs)
+                        audit(b.get("owner", 0), "vm_pipreq", f"{bid} pkgs={len(pkgs)} ok={pr.get('ok')}")
+                    except Exception as e:
+                        audit(b.get("owner", 0), "vm_pipreq_fail", f"{bid} {e}")
             else:
                 try:
                     bot_dir2 = Path(b.get("dir") or "")
@@ -3556,7 +3560,13 @@ def _vm_deploy_bot(b: Dict[str, Any], vm: Dict[str, Any]) -> Dict[str, Any]:
                                 for extra in ("certifi", "dnspython"):
                                     if extra not in low2:
                                         pkgs2.append(extra)
-                            _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs2[:22])
+                            try:
+                                pr2 = _vmc.pip_install(vm["url"], vm.get("secret", ""), bid, pkgs2[:22])
+                                audit(b.get("owner", 0), "vm_pipscan", f"{bid} pkgs={pkgs2[:22]} ok={pr2.get('ok')}")
+                            except Exception as e:
+                                audit(b.get("owner", 0), "vm_pipscan_fail", f"{bid} {e}")
+                        else:
+                            audit(b.get("owner", 0), "vm_pipscan_empty", f"{bid} no third-party imports found")
                 except Exception:
                     pass
         except Exception:
@@ -17279,11 +17289,21 @@ def render_bot_delete_confirm(call: types.CallbackQuery, bot_id: str) -> None:
 def action_bot_delete(call: types.CallbackQuery, bot_id: str) -> None:
     b = find_bot(bot_id)
     if not b or (b["owner"] != call.from_user.id and not is_admin(call.from_user.id)):
-        ack(call, "Not yours"); return
+        ack(call, "Not found / not yours"); return
     stop_child(bot_id, manual=True)
+    for f in b.get("enc_files") or []:
+        try:
+            Path(f["enc_path"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            KEYRING.remove(f["key_id"])
+        except Exception:
+            pass
+    rmrf(b.get("dir") or "")
     delete_bot_doc(bot_id)
     audit(call.from_user.id, "bot_delete", f"bot={bot_id}")
-    ack(call, "Deleted")
+    ack(call, "Deleted everything")
     render_bots_menu(call)
 
 
