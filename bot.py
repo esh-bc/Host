@@ -584,6 +584,18 @@ SUPPORT_USR = "@iam_eshh"
 UPDATE_CH   = "https://t.me/eshxbots"
 FOOTER      = f"\n\n<blockquote>{BRAND_TAG}</blockquote>"
 
+# ── START VIDEO (/start main menu) ──
+# Video sent by owner 8189708860 as custom_main.mp4 (11s, 1280x720).
+# file_id is primary (instant, no re-upload). Local mp4 is fallback for
+# redeploys / file_id expiry. Set START_USE_VIDEO=False to revert to photo.
+START_VIDEO_FILE_ID = os.environ.get(
+    "START_VIDEO_FILE_ID",
+    "BAACAgUAAxkDAAID12qucA1R0WLZ0Gj86p3UFjEAAY7yHwACSSQAAi_zcFWDCm3ZKQ5twj0E",
+).strip()
+START_VIDEO_LOCAL = BASE_DIR / "storage" / "videos" / "start.mp4"
+START_USE_VIDEO = os.environ.get("START_USE_VIDEO", "1").strip().lower() not in ("0", "false", "no", "off")
+_VIDEO_FILE_IDS: Dict[str, str] = {}
+
 # ─── glyphs (smart contextual symbols + emojis for the UI) ──────
 G = {
     # core status / decisions
@@ -887,6 +899,58 @@ def _remember_file_id(ref: str, msg) -> None:
     try:
         if msg and getattr(msg, "photo", None):
             _PHOTO_FILE_IDS[ref] = msg.photo[-1].file_id
+    except Exception:
+        pass
+
+
+def _get_start_video_ref() -> Optional[str]:
+    """Return best video ref for /start, or None to fallback to photo."""
+    if not START_USE_VIDEO:
+        return None
+    # 1. explicit file_id (fastest, survives redeploys)
+    if START_VIDEO_FILE_ID:
+        return START_VIDEO_FILE_ID
+    # 2. local mp4 fallback
+    try:
+        if START_VIDEO_LOCAL.exists() and START_VIDEO_LOCAL.stat().st_size > 1024:
+            return str(START_VIDEO_LOCAL)
+    except Exception:
+        pass
+    # 3. setting override (admin can rotate without redeploy)
+    try:
+        v = get_setting("start_video_file_id", "")
+        if v:
+            return str(v).strip()
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_video(ref: str):
+    """Convert video ref to telebot-sendable: cached file_id → file_id → local file."""
+    fid = _VIDEO_FILE_IDS.get(ref)
+    if fid:
+        return fid
+    # Telegram file_ids are long opaque strings (not paths/URLs)
+    if isinstance(ref, str) and (ref.startswith("BAAC") or len(ref) > 40):
+        return ref
+    if isinstance(ref, str) and ref.startswith(("http://", "https://")):
+        return ref
+    try:
+        return open(ref, "rb")
+    except Exception:
+        return ref
+
+
+def _remember_video_file_id(ref: str, msg) -> None:
+    try:
+        if msg and getattr(msg, "video", None):
+            _VIDEO_FILE_IDS[ref] = msg.video.file_id
+        elif msg and getattr(msg, "document", None):
+            try:
+                _VIDEO_FILE_IDS[ref] = msg.document.file_id
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1743,6 +1807,85 @@ def show_menu(
             bot.delete_message(chat_id, call.message.message_id)
         except Exception as e:
             _log_err("delete_message", e)
+
+
+def show_start_menu(
+    chat_id: int,
+    caption: str,
+    kb: types.InlineKeyboardMarkup,
+    call: Optional[types.CallbackQuery] = None,
+    photo_fallback: str = "",
+) -> None:
+    """Start-menu sender: video if configured, else photo fallback.
+    Uses same delete-after-send safety as show_menu."""
+    vref = _get_start_video_ref()
+    if not vref:
+        show_menu(chat_id, photo_fallback, caption, kb, call=call)
+        return
+    cap = _html_safe_truncate(caption, 1024)
+    if call and call.message:
+        _cancel_loading(call.message.chat.id, call.message.message_id)
+
+    # 1. Try in-place edit when previous message has media.
+    if call and call.message and call.message.content_type in ("photo", "video"):
+        msg = call.message
+        media_ref = _resolve_video(vref)
+        try:
+            bot.edit_message_media(
+                media=types.InputMediaVideo(media_ref, caption=cap, parse_mode="HTML"),
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                reply_markup=kb,
+            )
+            return
+        except ApiTelegramException as e:
+            if "message is not modified" in str(e).lower():
+                return
+            _log_err("edit_message_media(video)", e)
+        except Exception as e:
+            _log_err("edit_message_media(video)", e)
+        finally:
+            try:
+                if hasattr(media_ref, "close"):
+                    media_ref.close()
+            except Exception:
+                pass
+        # caption-only fallback (keeps old media, updates text+buttons)
+        try:
+            bot.edit_message_caption(
+                cap, chat_id=chat_id, message_id=msg.message_id,
+                reply_markup=kb, parse_mode="HTML",
+            )
+            return
+        except Exception as e:
+            _log_err("edit_message_caption(start)", e)
+
+    # 2. Send new video first, then delete old.
+    new_msg_id: Optional[int] = None
+    try:
+        m = bot.send_video(chat_id, _resolve_video(vref), caption=cap,
+                           parse_mode="HTML", reply_markup=kb)
+        new_msg_id = m.message_id
+        _remember_video_file_id(vref, m)
+    except Exception as e:
+        _log_err("send_video(start)", e)
+
+    if new_msg_id is None and photo_fallback:
+        show_menu(chat_id, photo_fallback, caption, kb, call=call)
+        return
+    if new_msg_id is None:
+        try:
+            m = bot.send_message(chat_id, cap, parse_mode="HTML",
+                                 reply_markup=kb, disable_web_page_preview=True)
+            new_msg_id = m.message_id
+        except Exception as e:
+            _log_err("send_message(start-fallback)", e)
+
+    if new_msg_id is not None and call and call.message:
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except Exception as e:
+            _log_err("delete_message(start)", e)
 
 
 def show_text(
@@ -4932,7 +5075,8 @@ def render_main_menu(chat_id: int, uid: int,
         f"{G['div']}\n"
         f"Choose an option below.{FOOTER}"
     )
-    show_menu(chat_id, PHOTOS["main"], cap, main_menu_kb(is_admin(uid)), call=call)
+    show_start_menu(chat_id, cap, main_menu_kb(is_admin(uid)), call=call,
+                    photo_fallback=PHOTOS.get("main", ""))
 
 
 # ─── Silent mode in groups — bot will not respond in any group/channel ───────
@@ -16188,7 +16332,8 @@ def render_main_menu(chat_id: int, uid: int,
         f"{bullet('Wallet', '{}$'.format(u.get('wallet', 0)))}\n"
         f"{G['div']}\nChoose an option below.{FOOTER}"
     )
-    show_menu(chat_id, PHOTOS["main"], cap, main_menu_kb(is_admin(uid)), call=call)
+    show_start_menu(chat_id, cap, main_menu_kb(is_admin(uid)), call=call,
+                    photo_fallback=PHOTOS.get("main", ""))
 
 
 # ─── Render functions used by router ─────────────────────────────────────────
