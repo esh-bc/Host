@@ -1,13 +1,10 @@
 """
 VM Client — communicates with pid-esh-hostera-vm worker nodes.
 
-Smart VM selection rules:
-  1. VM must have < 3 bots (HARD CAP — never exceeded)
+Smart VM selection rules (1 PID = 1 bot):
+  1. VM must have < 1 bot (HARD CAP — never exceeded)
   2. VM must have enough free RAM
-  3. If VM has 2 bots → check if both are lightweight
-     (using < VM_LIGHTWEIGHT_THRESHOLD MB each)
-     Only then allow 3rd bot
-  4. Pick VM with most free RAM among eligible ones
+  3. Pick VM with most free RAM among eligible ones
 """
 
 from __future__ import annotations
@@ -22,7 +19,7 @@ except Exception:
     db = None  # type: ignore
     _MONGO_OK = False
 
-VM_MAX_BOTS_PER_VM     = int(os.environ.get("VM_MAX_BOTS_PER_VM", "3"))
+VM_MAX_BOTS_PER_VM     = int(os.environ.get("VM_MAX_BOTS_PER_VM", "1"))
 VM_RAM_RESERVE_MB      = int(os.environ.get("VM_RAM_RESERVE_MB", "80"))
 VM_LIGHTWEIGHT_THRESHOLD = int(os.environ.get("VM_LIGHTWEIGHT_MB", "80"))
 VM_BOT_RAM_LIMIT       = int(os.environ.get("VM_BOT_RAM_LIMIT", "250"))

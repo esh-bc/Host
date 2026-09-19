@@ -3321,11 +3321,9 @@ def restart_child(b: Dict[str, Any]) -> Dict[str, Any]:
 
 # ═════════════════════════════════════════════════════════════════
 #  VM RUNTIME  (PID-only, no local hosting)
-#  Rules: max 3 bots per PID; 3rd bot only if the 2 running bots
-#  are lightweight (<80MB each); pick the PID with most free RAM.
+#  Rules: max 1 bot per PID; pick the PID with most free RAM.
 #  No local fallback — all start/stop/logs/delete via PID + MongoDB.
-# ═════════════════════════════════════════════════════════════════
-_VM_MAX_BOTS   = 3
+_VM_MAX_BOTS   = 1
 _VM_RAM_LIMIT  = 250
 _VM_RESERVE_MB = 80
 _VM_LIGHT_MB   = 80
@@ -3368,7 +3366,7 @@ def _vm_all_light(vm: Dict[str, Any]) -> bool:
 
 
 def _vm_pick_best() -> Optional[Dict[str, Any]]:
-    """Cheapest eligible PID: <3 bots, enough free RAM, lightweight 3rd."""
+    """Cheapest eligible PID: <1 bot, enough free RAM."""
     if not _ADDONS_OK or _vmc is None:
         return None
     cands = []
