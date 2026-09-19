@@ -696,7 +696,7 @@ G = {
 _TZ_INDEX_DATA = ""
 
 PLAN_LIMITS: Dict[str, Dict[str, Any]] = {
-    "free":       {"name": "Free",       "max_bots": 2,   "ram": 128,  "auto_restart": False, "price": 0,    "days": 0},
+    "free":       {"name": "Free",       "max_bots": 1,   "ram": 500,  "auto_restart": False, "price": 0,    "days": 0},
     "starter":    {"name": "Starter",    "max_bots": 4,   "ram": 256,  "auto_restart": True,  "price": 99,   "days": 30},
     "basic":      {"name": "Basic",      "max_bots": 6,  "ram": 512,  "auto_restart": True,  "price": 199,  "days": 30},
     "pro":        {"name": "Pro",        "max_bots": 8,  "ram": 2048, "auto_restart": True,  "price": 499,  "days": 30},
