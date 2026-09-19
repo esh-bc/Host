@@ -15071,7 +15071,15 @@ def _monitor_system_stats():
     return stats
 
 
-def _progress_bar(current, total, width=12):
+def _progress_bar(current, total=None, width=12):
+    # Supports both _progress_bar(pct) and _progress_bar(sent, total).
+    if total is None:
+        try:
+            pct = max(0, min(100, int(current)))
+        except Exception:
+            pct = 0
+        filled = int(round(width * pct / 100))
+        return "▓" * filled + "░" * (width - filled) + f" {pct:>3}%"
     if total <= 0:
         return "░" * width + " 0%"
     pct    = min(current / total, 1.0)
