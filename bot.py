@@ -12721,9 +12721,7 @@ def _handle_bot_upload(m: types.Message) -> None:
         bot.reply_to(m, f"{G['no']} {sc('File too big')} (>{MAX_UPLOAD_BYTES // (1024*1024)} Mʙ).")
         return
     fname = doc.file_name or "upload.bin"
-    if not re.match(r"^[A-Za-z0-9._\-]+$", fname):
-        bot.reply_to(m, f"{G['warn']} {sc('Suspicious filename, please rename')}.")
-        return
+    # Filename verifier removed — all names allowed, no suspicious block.
     try:
         f = bot.get_file(doc.file_id)
         raw = bot.download_file(f.file_path)
