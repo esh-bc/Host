@@ -6744,16 +6744,16 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
     if data == "adm_set_stop_all":
         if not is_owner(call.from_user.id):
             ack(call, "Owner only"); return
-        return render_adm_confirm(call, "adm_set_stop_all", "Stop every running bot")
+        return render_adm_confirm(call, "adm_set_stop_all", "Turn off all bots? They will stop replying until you start them again. Nothing will be deleted.")
     if data == "adm_set_stop_all_yes":
         if not is_owner(call.from_user.id):
             ack(call, "Owner only"); return
-        ack(call, "Stopping…")
+        ack(call, "Turning off…")
         def _sb() -> None:
             n = _do_stop_all_bots(call.from_user.id)
             try:
                 bot.send_message(call.from_user.id,
-                                 f"{G['ok']} {sc('Stopped')} {n} {sc('bot(s)')}.")
+                                 f"{G['ok']} {sc('All bots are now off')} ({n}). {sc('Nothing is deleted. Start them again from My Bots / All Bots when ready')}.")
             except Exception:
                 pass
         threading.Thread(target=_sb, daemon=True).start()
@@ -8357,12 +8357,12 @@ def action_adm_force_scan_all(call: types.CallbackQuery) -> None:
 
 
 def action_adm_kill_all(call: types.CallbackQuery) -> None:
-    ack(call, "Killing all bots…")
+    ack(call, "Turning all off…")
     def _bg() -> None:
         n = _do_stop_all_bots(call.from_user.id)
         try:
             bot.send_message(call.from_user.id,
-                             f"{G['ok']} {sc('Killed')} {n} {sc('bot(s)')}.")
+                             f"{G['ok']} {sc('All bots are now off')} ({n}). {sc('Nothing is deleted. Start them again when ready')}.")
         except Exception:
             pass
     threading.Thread(target=_bg, daemon=True).start()
@@ -18093,17 +18093,13 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
             except Exception: pass
         threading.Thread(target=_rb, daemon=True).start(); return
     if data == "adm_set_stop_all":
-        return render_adm_confirm(call, "adm_set_stop_all", "Stop every running bot")
+        return render_adm_confirm(call, "adm_set_stop_all", "Turn off all bots? They will stop replying until you start them again. Nothing will be deleted.")
     if data == "adm_set_stop_all_yes":
         if not is_owner(uid): ack(call, "Owner only"); return
-        ack(call, "Stopping\u2026")
+        ack(call, "Turning off…")
         def _sb():
-            n = 0
-            for bid in list(RUNNING.keys()):
-                try: stop_child(bid, manual=True); n += 1
-                except Exception: pass
-            audit(uid, "stop_all_bots", f"stopped={n}")
-            try: bot.send_message(uid, f"{G['ok']} Stopped {n} bot(s).")
+            n = _do_stop_all_bots(uid)
+            try: bot.send_message(uid, f"{G['ok']} All bots are now off ({n}). Nothing is deleted. Start them again when ready.")
             except Exception: pass
         threading.Thread(target=_sb, daemon=True).start(); return
     if data == "adm_set_clean_orphans":
