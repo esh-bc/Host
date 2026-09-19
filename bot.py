@@ -1730,8 +1730,9 @@ def show_menu(
     if call and call.message:
         _cancel_loading(call.message.chat.id, call.message.message_id)
 
-    # ── 1. Try in-place edits when the previous message is a photo ──
-    if call and call.message and call.message.content_type == "photo":
+    # ── 1. Try in-place edits when the previous message has media ──
+    # Main menu is now animation/video, so admin photo must edit from those too.
+    if call and call.message and call.message.content_type in ("photo", "video", "animation"):
         msg = call.message
 
         # 1a. Try to swap photo + caption together.
@@ -18911,6 +18912,14 @@ def cb_root(call: types.CallbackQuery) -> None:
 
 
 def _route_callback(call: types.CallbackQuery, data: str) -> None:
+    # Trace every callback to disk so Admin taps leave evidence even if send fails.
+    try:
+        _td = DIRS.get("logs", BASE_DIR / "storage" / "logs")
+        _td.mkdir(parents=True, exist_ok=True)
+        with open(_td / "callback.log", "a", encoding="utf-8") as _lf:
+            _lf.write(f"{ts_iso()} uid={getattr(call.from_user, 'id', '?')} data={data} ct={getattr(getattr(call, 'message', None), 'content_type', '?')}\n")
+    except Exception:
+        pass
     # Core menus
     if data == "menu_main":     ack(call); render_main_menu(call.message.chat.id, call.from_user.id, call); return
     if data == "menu_bots":     ack(call); render_bots_menu(call); return
