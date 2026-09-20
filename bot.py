@@ -2260,6 +2260,14 @@ def render_adm_vm_nodes(call: types.CallbackQuery) -> None:
         icon = "🟢" if vm.get("enabled", True) else "🔴"
         rows.append(f"{icon} <code>{esc(vm_id)}</code> — <code>{esc(vm.get('url', ''))}</code>")
         kb.add(Btn(f"{icon} {vm_id}", callback_data=f"adm_vm_info:{vm_id}"))
+    try:
+        _orphans = _vm_orphans()
+    except Exception:
+        _orphans = []
+    if _orphans:
+        rows.append(f"\n<b>⚠️ PID orphans ({len(_orphans)}) — VM delete failed, retry needed</b>")
+        for _o in _orphans[:10]:
+            rows.append(f"{G['bullet']} <code>{esc(str(_o.get('bot_id', '?')))}</code> @ <code>{esc(str(_o.get('vm_id', '?')))}</code>")
     if not nodes:
         rows.append(f"<i>{sc('No VMs yet — tap Add VM')}</i>")
     kb2 = types.InlineKeyboardMarkup(row_width=2)
@@ -2269,6 +2277,11 @@ def render_adm_vm_nodes(call: types.CallbackQuery) -> None:
     )
     for r in kb.keyboard:
         kb2.keyboard.append(r)
+    try:
+        for _i, _o in enumerate(_vm_orphans()[:10]):
+            kb2.add(Btn(f"🔁 Retry {_o.get('bot_id', '?')[:8]}", callback_data=f"adm_vm_orphan_retry:{_i}", style="primary"))
+    except Exception:
+        pass
     kb2.add(Btn(f"{G['back']}  {sc('Admin')}", callback_data="menu_admin", style="primary"))
     show_menu(call.message.chat.id, PHOTOS["admin"], "\n".join(rows) + f"\n{G['div']}{FOOTER}", kb2, call=call)
 
@@ -2391,6 +2404,11 @@ def _vm_remove(call: types.CallbackQuery, vm_id: str) -> None:
     if vm_id in nodes:
         del nodes[vm_id]
         _vm_save_nodes(nodes)
+        try:
+            if _ADDONS_OK and _mdb is not None:
+                _mdb.remove_vm(vm_id)
+        except Exception:
+            pass
         audit(call.from_user.id, "vm_remove", vm_id)
         ack(call, f"{G['trash']} {vm_id} removed")
     else:
@@ -3694,22 +3712,130 @@ def stop_child(bot_id: str, manual: bool = True) -> Dict[str, Any]:
     return _stop_child_local(bot_id, manual=manual)
 
 
-def delete_bot_doc(bot_id: str) -> None:
-    """Permanent delete: PID + MongoDB + local files + GitHub backup."""
+# ── VM orphan queue (PID unreachable during delete) ──────────────
+# Policy: proceed-and-flag — if the PID can't be reached, everything else
+# is still wiped and the PID remnant is queued here for admin retry.
+
+def _vm_orphans() -> List[Dict[str, Any]]:
+    try:
+        items = get_setting("vm_orphans", []) or []
+        return [x for x in items if isinstance(x, dict)]
+    except Exception:
+        return []
+
+
+def _vm_orphans_save(items: List[Dict[str, Any]]) -> None:
+    try:
+        set_setting("vm_orphans", items)
+    except Exception:
+        pass
+
+
+def _flag_vm_orphan(bot_id: str, vm: Dict[str, Any], error: str) -> None:
+    try:
+        items = [x for x in _vm_orphans() if x.get("bot_id") != bot_id]
+        items.append({
+            "bot_id": bot_id,
+            "vm_id":  (vm or {}).get("vm_id", "?"),
+            "url":    (vm or {}).get("url", ""),
+            "secret": (vm or {}).get("secret", ""),
+            "error":  str(error or "unreachable")[:200],
+            "ts":     ts_iso(),
+        })
+        _vm_orphans_save(items)
+    except Exception:
+        pass
+    try:
+        audit(0, "vm_orphan", f"bot={bot_id} vm={(vm or {}).get('vm_id', '?')} err={str(error)[:120]}")
+    except Exception:
+        pass
+
+
+def _vm_orphan_retry(index: int) -> Dict[str, Any]:
+    """Re-attempt PID delete for a queued orphan. Returns {ok, error}."""
+    try:
+        rec = _vm_orphans()[index]
+    except Exception:
+        return {"ok": False, "error": "Orphan not found."}
+    if _vmc is None:
+        return {"ok": False, "error": "vm_client missing."}
+    try:
+        r = _vmc.delete(rec.get("url", ""), rec.get("secret", ""), rec.get("bot_id", ""))
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+    if r and r.get("ok"):
+        _vm_orphans_save([x for x in _vm_orphans() if x.get("bot_id") != rec.get("bot_id")])
+        try:
+            audit(0, "vm_orphan_cleaned", f"bot={rec.get('bot_id')}")
+        except Exception:
+            pass
+        return {"ok": True}
+    return {"ok": False, "error": str((r or {}).get("error", "failed"))[:200]}
+
+
+def _delete_receipt_short(receipt: Dict[str, Any]) -> str:
+    """Toast-safe summary (Telegram popup has a hard length limit)."""
+    if receipt.get("vm") is False:
+        return "Deleted, PID unreachable — queued for admin retry"
+    if receipt.get("github") is False:
+        return "Deleted, GitHub backup may remain"
+    if receipt.get("mongo") is False:
+        return "Deleted, DB cleanup uncertain"
+    return "Deleted — everything wiped"
+
+
+def _delete_receipt_detail(bot_id: str, receipt: Dict[str, Any]) -> str:
+    def mark(v):
+        return "✅" if v is True else ("⏭️" if v == "skipped" else "❌")
+    rows = [
+        f"{mark(receipt.get('vm'))} PID (process + venv + logs)",
+        f"{mark(receipt.get('mongo'))} MongoDB (record + files)",
+        f"{mark(receipt.get('files'))} Local files + keys",
+        f"{mark(receipt.get('github'))} GitHub backup",
+    ]
+    extra = "\n⚠️ PID remnant queued under Admin → VM Nodes for retry." if receipt.get("orphan") else ""
+    return f"🧾 <b>Delete receipt</b> <code>{esc(bot_id)}</code>\n" + "\n".join(rows) + extra
+
+
+def delete_bot_doc(bot_id: str) -> Dict[str, Any]:
+    """Verified full wipe: tunnel + PID + MongoDB + local files + GitHub.
+    Never raises. Returns per-layer receipt {vm, mongo, files, github,
+    orphan}; each layer is True / False / "skipped"."""
+    receipt: Dict[str, Any] = {
+        "vm": "skipped", "mongo": "skipped", "files": False,
+        "github": "skipped", "orphan": False,
+    }
     try:
         b = find_bot(bot_id)
     except Exception:
         b = None
+    # 0. Tunnel (legacy local tunnels + future per-bot tunnels)
+    try:
+        _stop_tunnel(bot_id)
+    except Exception:
+        pass
+    # 1. PID (VM worker node) — verify, retry once, else orphan + proceed
     try:
         if b and b.get("vm_id") and _ADDONS_OK and _vmc is not None:
             vm = _vm_get(b["vm_id"])
             if vm:
-                try:
-                    _vmc.delete(vm["url"], vm.get("secret", ""), b["_id"])
-                except Exception:
-                    pass
+                r: Optional[Dict[str, Any]] = None
+                for _ in range(2):
+                    try:
+                        r = _vmc.delete(vm["url"], vm.get("secret", ""), b["_id"])
+                    except Exception as e:
+                        r = {"ok": False, "error": str(e)}
+                    if r and r.get("ok"):
+                        break
+                if r and r.get("ok"):
+                    receipt["vm"] = True
+                else:
+                    receipt["vm"] = False
+                    receipt["orphan"] = True
+                    _flag_vm_orphan(b["_id"], vm, (r or {}).get("error", "unreachable"))
     except Exception:
-        pass
+        receipt["vm"] = False
+    # 2. MongoDB (record + GridFS files, all URIs) — verify record is gone
     try:
         if _ADDONS_OK and _mdb is not None:
             try:
@@ -3720,8 +3846,15 @@ def delete_bot_doc(bot_id: str) -> None:
                 _mdb.delete_bot_file(bot_id)
             except Exception:
                 pass
+            try:
+                left = _mdb.get_bot(bot_id)
+            except Exception:
+                left = None
+            receipt["mongo"] = False if left else True
     except Exception:
-        pass
+        receipt["mongo"] = False
+    # 3. Local files + keys + pending queue + per-bot JSON
+    _dir: Optional[Path] = None
     try:
         if b:
             for f in b.get("enc_files") or []:
@@ -3729,21 +3862,41 @@ def delete_bot_doc(bot_id: str) -> None:
                     Path(f["enc_path"]).unlink(missing_ok=True)
                 except Exception:
                     pass
+                try:
+                    KEYRING.remove(f["key_id"])
+                except Exception:
+                    pass
             try:
+                _dir = Path(b.get("dir") or "")
                 rmrf(b.get("dir") or "")
             except Exception:
                 pass
-            try:
-                threading.Thread(target=_gh_delete_bot_files, args=(b,), daemon=True).start()
-            except Exception:
-                pass
+        try:
+            pending_remove(bot_id)
+        except Exception:
+            pass
+        try:
+            _delete_bot_doc_local(bot_id)
+        except Exception:
+            pass
+        receipt["files"] = (not _dir.exists()) if _dir and str(_dir) else True
     except Exception:
-        pass
+        receipt["files"] = False
+    # 4. GitHub backup — inline (not background) + verify dir is empty
     try:
-        pending_remove(bot_id)
+        if b and gh_enabled():
+            try:
+                _gh_delete_bot_files(b)
+            except Exception as e:
+                print(f"[gh_delete] {e}")
+            try:
+                left = _gh_list_dir(_gh_bot_dir(b))
+                receipt["github"] = (len(left) == 0)
+            except Exception:
+                receipt["github"] = True
     except Exception:
-        pass
-    return _delete_bot_doc_local(bot_id)
+        receipt["github"] = False
+    return receipt
 
 
 def tail_log(bot_id: str, lines: int = 60) -> str:
@@ -6239,8 +6392,8 @@ def render_bot_delete_confirm(call: types.CallbackQuery, bot_id: str) -> None:
         f"{G['div_eq']}\n"
         f"{bullet('Bot', b['name'])}\n\n"
         f"{G['warn']}  <b>{sc('Choose delete type')}:</b>\n\n"
-        f"{G['bullet']} <b>{sc('Delete Bot Files')}</b> — {sc('removes files and keys only')}\n"
-        f"{G['bullet']} <b>{sc('Delete All Data')}</b> — {sc('removes files keys AND GitHub backup')}\n\n"
+        f"{G['bullet']} <b>{sc('Delete Bot Files')}</b> — {sc('full wipe: process, PID data, MongoDB, files, keys AND GitHub backup')}\n"
+        f"{G['bullet']} <b>{sc('Delete All Data')}</b> — {sc('same full wipe, everything permanently gone')}\n\n"
         f"{sc('This cannot be undone')}.{FOOTER}"
     )
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -6265,8 +6418,7 @@ def render_bot_delfiles_confirm(call: types.CallbackQuery, bot_id: str) -> None:
     cap = (
         f"<b>{G['trash']} {sc('Delete Bot Files')} — {esc(b['name'])}</b>\n"
         f"{G['div_eq']}\n"
-        f"{sc('Removes encrypted files and keys only.')}\n"
-        f"{sc('GitHub backup will NOT be deleted.')}\n\n"
+        f"{sc('Removes EVERYTHING: process, PID data, MongoDB, files, keys AND GitHub backup.')}\n\n"
         f"{sc('Are you sure?')}{FOOTER}"
     )
     show_menu(call.message.chat.id, PHOTOS["bot"], cap,
@@ -6281,7 +6433,7 @@ def render_bot_delall_confirm(call: types.CallbackQuery, bot_id: str) -> None:
     cap = (
         f"<b>{G['no']} {sc('Delete All Data')} — {esc(b['name'])}</b>\n"
         f"{G['div_eq']}\n"
-        f"{sc('Removes files, keys AND deletes from GitHub.')}\n"
+        f"{sc('Removes process, PID data, MongoDB, files, keys AND deletes from GitHub.')}\n"
         f"{G['warn']} <b>{sc('Everything will be permanently gone.')}</b>\n\n"
         f"{sc('Are you sure?')}{FOOTER}"
     )
@@ -6305,9 +6457,9 @@ def action_bot_delete(call: types.CallbackQuery, bot_id: str) -> None:
             pass
         KEYRING.remove(f["key_id"])
     rmrf(b.get("dir") or "")
-    delete_bot_doc(bot_id)
-    ack(call, "Deleted")
-    audit(call.from_user.id, "bot_delete", f"bot={bot_id}")
+    rec = delete_bot_doc(bot_id)
+    ack(call, _delete_receipt_short(rec))
+    audit(call.from_user.id, "bot_delete", f"bot={bot_id} receipt={rec}")
     render_bots_menu(call)
 
 
@@ -6326,9 +6478,9 @@ def action_bot_delfiles(call: types.CallbackQuery, bot_id: str) -> None:
             pass
         KEYRING.remove(f["key_id"])
     rmrf(b.get("dir") or "")
-    delete_bot_doc(bot_id)
-    ack(call, "Bot files deleted")
-    audit(call.from_user.id, "bot_delfiles", f"bot={bot_id}")
+    rec = delete_bot_doc(bot_id)
+    ack(call, _delete_receipt_short(rec))
+    audit(call.from_user.id, "bot_delfiles", f"bot={bot_id} receipt={rec}")
     render_bots_menu(call)
 
 
@@ -6347,10 +6499,9 @@ def action_bot_delall(call: types.CallbackQuery, bot_id: str) -> None:
             pass
         KEYRING.remove(f["key_id"])
     rmrf(b.get("dir") or "")
-    threading.Thread(target=_gh_delete_bot_files, args=(b,), daemon=True).start()
-    delete_bot_doc(bot_id)
-    ack(call, "All data deleted")
-    audit(call.from_user.id, "bot_delall", f"bot={bot_id}")
+    rec = delete_bot_doc(bot_id)
+    ack(call, _delete_receipt_short(rec))
+    audit(call.from_user.id, "bot_delall", f"bot={bot_id} receipt={rec}")
     render_bots_menu(call)
 
 
@@ -17286,11 +17437,11 @@ def render_bot_delete_confirm(call: types.CallbackQuery, bot_id: str) -> None:
     cap = (
         f"<b>{G['warn']} {sc('Confirm Delete')}</b>\n{G['div']}\n"
         f"{sc('Delete')} <b>{esc(b['name'])}</b>?\n"
-        f"{sc('Keeps files but removes the bot record')}.{FOOTER}"
+        f"{sc('Wipes EVERYTHING: running process, PID data, MongoDB, files, keys AND GitHub backup')}.{FOOTER}"
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        Btn(f"{G['ok']}  Delete Record", callback_data=f"bot_delyes_{bot_id}", style="danger"),
+        Btn(f"{G['ok']}  Delete Everything", callback_data=f"bot_delyes_{bot_id}", style="danger"),
         Btn(f"{G['no']}  Cancel",         callback_data=f"bot_view_{bot_id}",  style="primary"),
     )
     show_text(call.message.chat.id, cap, kb, call=call)
@@ -17311,9 +17462,14 @@ def action_bot_delete(call: types.CallbackQuery, bot_id: str) -> None:
         except Exception:
             pass
     rmrf(b.get("dir") or "")
-    delete_bot_doc(bot_id)
-    audit(call.from_user.id, "bot_delete", f"bot={bot_id}")
-    ack(call, "Deleted everything")
+    rec = delete_bot_doc(bot_id)
+    audit(call.from_user.id, "bot_delete", f"bot={bot_id} receipt={rec}")
+    ack(call, _delete_receipt_short(rec))
+    if rec.get("vm") is False or rec.get("github") is False or rec.get("mongo") is False:
+        try:
+            bot.send_message(call.message.chat.id, _delete_receipt_detail(bot_id, rec), parse_mode="HTML")
+        except Exception:
+            pass
     render_bots_menu(call)
 
 
@@ -17324,7 +17480,7 @@ def render_bot_delfiles_confirm(call: types.CallbackQuery, bot_id: str) -> None:
     cap = (
         f"<b>{G['warn']} {sc('Delete Files')}</b>\n{G['div']}\n"
         f"{sc('Delete files of')} <b>{esc(b['name'])}</b>?\n"
-        f"{sc('Record stays but all uploaded files will be removed')}.{FOOTER}"
+        f"{sc('Full wipe: process, PID data, MongoDB, files, keys AND GitHub backup')}.{FOOTER}"
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -17338,17 +17494,26 @@ def action_bot_delfiles(call: types.CallbackQuery, bot_id: str) -> None:
     b = find_bot(bot_id)
     if not b or (b["owner"] != call.from_user.id and not is_admin(call.from_user.id)):
         ack(call, "Not yours"); return
-    try:
-        rmrf(b.get("dir", ""))
-    except Exception:
-        pass
-    b["enc_files"] = {}
-    b["status"] = "stopped"
-    save_bot(b)
     stop_child(bot_id, manual=True)
-    audit(call.from_user.id, "bot_delfiles", f"bot={bot_id}")
-    ack(call, "Files deleted")
-    render_bot_view(call, bot_id)
+    for f in b.get("enc_files") or []:
+        try:
+            Path(f["enc_path"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            KEYRING.remove(f["key_id"])
+        except Exception:
+            pass
+    rmrf(b.get("dir") or "")
+    rec = delete_bot_doc(bot_id)
+    audit(call.from_user.id, "bot_delfiles", f"bot={bot_id} receipt={rec}")
+    ack(call, _delete_receipt_short(rec))
+    if rec.get("vm") is False or rec.get("github") is False or rec.get("mongo") is False:
+        try:
+            bot.send_message(call.message.chat.id, _delete_receipt_detail(bot_id, rec), parse_mode="HTML")
+        except Exception:
+            pass
+    render_bots_menu(call)
 
 
 def render_bot_delall_confirm(call: types.CallbackQuery, bot_id: str) -> None:
@@ -17357,12 +17522,12 @@ def render_bot_delall_confirm(call: types.CallbackQuery, bot_id: str) -> None:
         ack(call, "Not yours"); return
     cap = (
         f"<b>{G['no']} {sc('Delete Everything')}</b>\n{G['div']}\n"
-        f"{sc('Delete')} <b>{esc(b['name'])}</b> including all files and record?{FOOTER}"
+        f"{sc('Delete')} <b>{esc(b['name'])}</b> including process, PID data, MongoDB, files, keys and GitHub backup?{FOOTER}"
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         Btn(f"{G['no']}  Delete All", callback_data=f"bot_delalyes_{bot_id}", style="danger"),
-        Btn(f"{G['ok']}  Cancel",     callback_data=f"bot_view_{bot_id}",     style="primary"),
+        Btn(f"{G['ok']}  Cancel",     callback_data=f"bot_view_{bot_id}",       style="primary"),
     )
     show_text(call.message.chat.id, cap, kb, call=call)
 
@@ -17376,9 +17541,14 @@ def action_bot_delall(call: types.CallbackQuery, bot_id: str) -> None:
         rmrf(b.get("dir", ""))
     except Exception:
         pass
-    delete_bot_doc(bot_id)
-    audit(call.from_user.id, "bot_delall", f"bot={bot_id}")
-    ack(call, "Deleted everything")
+    rec = delete_bot_doc(bot_id)
+    audit(call.from_user.id, "bot_delall", f"bot={bot_id} receipt={rec}")
+    ack(call, _delete_receipt_short(rec))
+    if rec.get("vm") is False or rec.get("github") is False or rec.get("mongo") is False:
+        try:
+            bot.send_message(call.message.chat.id, _delete_receipt_detail(bot_id, rec), parse_mode="HTML")
+        except Exception:
+            pass
     render_bots_menu(call)
 
 
@@ -18031,9 +18201,51 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
         _vm_remove(call, data.split(":", 1)[1]); return render_adm_vm_nodes(call)
     if data.startswith("adm_vm_test:"):
         _vm_test_one(call, data.split(":", 1)[1]); return
+    if data.startswith("adm_vm_orphan_retry:"):
+        if not admin_only_call(call, "delete_bot"): return
+        try:
+            _idx = int(data.split(":", 1)[1])
+        except Exception:
+            _idx = -1
+        _r = _vm_orphan_retry(_idx)
+        ack(call, "Orphan cleaned ✅" if _r.get("ok") else f"Retry failed: {str(_r.get('error', ''))[:100]}")
+        return render_adm_vm_nodes(call)
+    if data.startswith("adm_bc_del_"):
+        if not admin_only_call(call, "delete_bot"): return
+        _bid = data[len("adm_bc_del_"):]
+        _b = find_bot(_bid)
+        if not _b:
+            _cands = [x for x in db_load()["bots"].values() if x["_id"].startswith(_bid)]
+            _b = _cands[0] if _cands else None
+        if not _b:
+            ack(call, "Not found"); return
+        return render_adm_confirm_custom(call, f"adm_bc_del_confirm_{_b['_id']}",
+                                         f"Delete bot {_b.get('name', '?')[:20]} (FULL wipe: PID+Mongo+files+GitHub)",
+                                         "adm_bot_manager")
+    if data.startswith("adm_bc_del_confirm_"):
+        if not admin_only_call(call, "delete_bot"): return
+        _bid2 = data[len("adm_bc_del_confirm_"):]
+        _b2 = find_bot(_bid2)
+        if not _b2:
+            ack(call, "Not found"); return
+        ack(call, "Deleting…")
+        try:
+            stop_child(_bid2, manual=True)
+        except Exception:
+            pass
+        _rec = delete_bot_doc(_bid2)
+        audit(call.from_user.id, "admin_del_bot", f"bot={_bid2} receipt={_rec}")
+        ack(call, _delete_receipt_short(_rec))
+        try:
+            _fn = globals().get("render_adm_bc_list_all")
+            if _fn:
+                return _fn(call)
+        except Exception:
+            pass
+        return render_adm_bot_manager(call)
     if data == "adm_mongo_add":
         USER_STATES[call.from_user.id] = {"flow": "await_mongo_uri"}
-        bot.send_message(call.message.chat.id, f"{G['key']} {sc('Send the MongoDB URI now')} (<code>mongodb+srv://...</code>).", parse_mode="HTML"); return
+        bot.send_message(call.message.chat.id, f"{G['key']} {sc('Send the MongoDB URI now')} (<code>https://....onrender.com</code>).", parse_mode="HTML"); return
     if data.startswith("adm_mongo_remove:"):
         _mongo_remove_idx(call, data.split(":", 1)[1]); return render_adm_mongo(call)
     if data.startswith("adm_mongo_info:"):
