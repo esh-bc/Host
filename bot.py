@@ -8907,8 +8907,193 @@ def render_adm_sys_tools(call: types.CallbackQuery) -> None:
         Btn("📜  Rᴜʟᴇꜱ Tᴇxᴛ",    callback_data="adm_set_rules_text",  style="primary"),
         Btn("📦  Gɪᴛʜᴜʙ",         callback_data="adm_github",          style="primary"),
     )
+    kb.add(
+        Btn("🔄  Uᴘᴅᴀᴛᴇ & Rᴇsᴛᴀʀᴛ", callback_data="adm_restart_update", style="success"),
+    )
     kb.add(Btn(f"{G['back']}  Aᴅᴍɪɴ", callback_data="menu_admin", style="primary"))
     show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
+
+
+# ── Self-update + restart (owner only) ───────────────────────────
+# Admin → System Tools → Update & Restart: git fetch/pull latest source,
+# pip install if requirements changed, then re-exec the process.
+# Runtime data under storage/ is stashed across the pull so live DB edits
+# are never lost. Public repo → no auth needed.
+
+def _run_cmd(cmd: list, timeout: int = 60) -> dict:
+    try:
+        p = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True,
+                           text=True, timeout=timeout)
+        return {"ok": p.returncode == 0, "out": (p.stdout or "").strip(),
+                "err": (p.stderr or "").strip()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def _git_run(args: list, timeout: int = 60) -> dict:
+    if shutil.which("git") is None:
+        return {"ok": False, "error": "git binary not found on server."}
+    return _run_cmd(["git"] + args, timeout=timeout)
+
+
+def _restart_pending_path() -> Path:
+    return Path(BASE_DIR) / "storage" / ".restart_pending.json"
+
+
+def _update_status() -> dict:
+    """Read-only: branch, local/upstream hashes, behind count, dirty files."""
+    info: dict = {"ok": False}
+    br = _git_run(["rev-parse", "--abbrev-ref", "HEAD"])
+    if not br.get("ok"):
+        return {**info, "error": "Not a git checkout."}
+    branch = br["out"]
+    local = _git_run(["rev-parse", "--short", "HEAD"])["out"]
+    f = _git_run(["fetch", "origin", branch], timeout=120)
+    if not f.get("ok"):
+        return {**info, "branch": branch, "local": local,
+                "error": f"Fetch failed: {(f.get('err') or f.get('error', ''))[:160]}"}
+    upstream = _git_run(["rev-parse", "--short", f"origin/{branch}"])["out"]
+    behind = _git_run(["rev-list", "--count", f"HEAD..origin/{branch}"])["out"]
+    dirty = [l for l in _git_run(["status", "--porcelain"])["out"].splitlines()
+             if l and not l.startswith("??")]
+    files = [l for l in _git_run(["diff", "--name-only", f"HEAD..origin/{branch}"])["out"].splitlines() if l]
+    try:
+        n = int(behind)
+    except Exception:
+        n = -1
+    return {"ok": True, "branch": branch, "local": local, "upstream": upstream,
+            "behind": n, "dirty": dirty, "files": files}
+
+
+def _do_self_update() -> dict:
+    """Fetch → ff-only pull (storage/ data stashed) → pip if reqs changed."""
+    st = _update_status()
+    if not st.get("ok"):
+        return st
+    if st["behind"] <= 0:
+        return {"ok": True, "noop": True, "local": st["local"]}
+    dirty_paths = []
+    for line in st["dirty"]:
+        p = line[3:].strip().strip('"') if len(line) > 3 else ""
+        if " -> " in p:
+            p = p.split(" -> ")[-1]
+        if p:
+            dirty_paths.append(p)
+    blocked = [p for p in dirty_paths if not p.startswith("storage/")]
+    if blocked:
+        return {"ok": False,
+                "error": "Local code changes block update: " + ", ".join(blocked[:5])}
+    stashed = False
+    if dirty_paths:
+        s = _git_run(["stash", "push", "-m", "selfupdate-data", "--", "storage/"])
+        stashed = bool(s.get("ok"))
+    pull = _git_run(["pull", "--ff-only", "origin", st["branch"]], timeout=180)
+    if not pull.get("ok"):
+        if stashed:
+            _git_run(["stash", "pop"])
+        return {"ok": False,
+                "error": "Pull failed: " + (pull.get("err") or pull.get("error", ""))[:200]}
+    if stashed:
+        pop = _git_run(["stash", "pop"], timeout=60)
+        if not pop.get("ok"):
+            return {"ok": False, "error": "Code updated but data restore conflicted — stash kept. Run `git stash pop` on the server."}
+    new = _git_run(["rev-parse", "--short", "HEAD"])["out"]
+    pip_ok = None
+    if "requirements.txt" in (st["files"] or []):
+        pip = _run_cmd([sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--quiet"], timeout=600)
+        pip_ok = bool(pip.get("ok"))
+    return {"ok": True, "old": st["local"], "new": new, "pip": pip_ok,
+            "files": st["files"]}
+
+
+def render_adm_restart_update(call: types.CallbackQuery) -> None:
+    if not is_owner(call.from_user.id):
+        ack(call, "Owner only."); return
+    ack(call, "Checking for updates…")
+    try:
+        st = _update_status()
+    except Exception as e:
+        st = {"ok": False, "error": str(e)[:160]}
+    if not st.get("ok"):
+        cap = (f"<b>🔄 {sc('Update & Restart')}</b>\n{G['div_eq']}\n"
+               f"{G['no']} {esc(str(st.get('error', 'failed')))}.{FOOTER}")
+        kb = types.InlineKeyboardMarkup()
+        kb.add(Btn(f"{G['back']}  {sc('System Tools')}", callback_data="adm_sys_tools", style="primary"))
+        show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
+        return
+    behind = st["behind"]
+    flist = "\n".join(f"{G['bullet']} <code>{esc(f)}</code>" for f in (st["files"] or [])[:10])
+    if len(st["files"] or []) > 10:
+        flist += f"\n<i>…and {len(st['files']) - 10} more</i>"
+    cap = (
+        f"<b>🔄 {sc('Update & Restart')}</b>\n{G['div_eq']}\n"
+        f"{bullet('Branch', st['branch'])}\n"
+        f"{bullet('Local', st['local'])}\n"
+        f"{bullet('Upstream', st['upstream'])}\n"
+        f"{bullet('Behind', behind)}\n"
+        f"{bullet('Dirty data', len(st['dirty']))}\n"
+        + (f"{G['div']}\n{flist}\n" if flist else "")
+        + (f"<b>{sc('Pull latest and restart on the new code?')}</b>{FOOTER}"
+           if behind > 0 else f"<i>{sc('Already up to date — nothing to pull.')}</i>{FOOTER}")
+    )
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if behind > 0:
+        kb.add(Btn(f"⬇️  {sc('Pull & Restart')}", callback_data="adm_restart_update_yes", style="danger"))
+    kb.add(Btn(f"{G['back']}  {sc('System Tools')}", callback_data="adm_sys_tools", style="primary"))
+    show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
+
+
+def action_adm_restart_update(call: types.CallbackQuery) -> None:
+    if not is_owner(call.from_user.id):
+        ack(call, "Owner only."); return
+    ack(call, "Updating…")
+    try:
+        res = _do_self_update()
+    except Exception as e:
+        res = {"ok": False, "error": str(e)[:200]}
+    audit(call.from_user.id, "self_update",
+          f"ok={res.get('ok')} old={res.get('old', res.get('local', '?'))} new={res.get('new', '?')} err={str(res.get('error', ''))[:120]}")
+    if not res.get("ok"):
+        try:
+            bot.send_message(call.message.chat.id,
+                             f"{G['no']} <b>{sc('Update failed')}</b>\n<code>{esc(str(res.get('error', 'unknown'))[:400])}</code>",
+                             parse_mode="HTML")
+        except Exception:
+            pass
+        return render_adm_restart_update(call)
+    if res.get("noop"):
+        try:
+            bot.send_message(call.message.chat.id,
+                             f"{G['ok']} {sc('Already up to date')} (<code>{esc(res.get('local', '?'))}</code>).",
+                             parse_mode="HTML")
+        except Exception:
+            pass
+        return render_adm_restart_update(call)
+    try:
+        _restart_pending_path().write_text(json.dumps({
+            "chat_id": call.message.chat.id,
+            "old": res.get("old", "?"), "new": res.get("new", "?"),
+            "ts": time.time(),
+        }))
+    except Exception:
+        pass
+    try:
+        bot.send_message(call.message.chat.id,
+                         f"{G['refresh']} {sc('Restarting on')} <code>{esc(res.get('new', '?'))}</code>…",
+                         parse_mode="HTML")
+    except Exception:
+        pass
+    time.sleep(1)
+    try:
+        argv = [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]
+        os.execv(sys.executable, argv)
+    except Exception as e:
+        try:
+            bot.send_message(call.message.chat.id,
+                             f"{G['no']} {sc('Restart failed')}: <code>{esc(str(e))[:200]}</code>",
+                             parse_mode="HTML")
+        except Exception:
+            pass
 
 
 def render_adm_sys_health(call: types.CallbackQuery) -> None:
@@ -18494,6 +18679,10 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
                 except Exception: pass
         threading.Thread(target=_ex, daemon=True).start(); return
 
+    if data == "adm_restart_update":
+        render_adm_restart_update(call); return
+    if data == "adm_restart_update_yes":
+        action_adm_restart_update(call); return
     # Photo replacement
     if data.startswith("adm_photo_"):
         if not is_owner(uid) and not admin_can(uid, "manage_admins"):
@@ -20104,6 +20293,26 @@ def main() -> int:
         f"{bullet('GH Bkp',  'on' if gh_enabled() else 'off')}\n"
         f"{bullet('TG Bkp',  _tg_backup_channel() or 'off')}"
     )
+    # Self-update restart receipt — confirm the new code is live
+    try:
+        _rp = _restart_pending_path()
+        if _rp.exists():
+            _info = json.loads(_rp.read_text())
+            _rp.unlink(missing_ok=True)
+            try:
+                _cur = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"], cwd=str(BASE_DIR),
+                    capture_output=True, text=True, timeout=15)
+                _cur_hash = (_cur.stdout or "").strip() or _info.get("new", "?")
+            except Exception:
+                _cur_hash = _info.get("new", "?")
+            notify_owner(
+                f"<b>{G['ok']} Back online after update</b>\n"
+                f"{bullet('From', _info.get('old', '?'))}\n"
+                f"{bullet('Now',  _cur_hash)}"
+            )
+    except Exception:
+        pass
     # Auto-start bots that were running
     for b in db_load()["bots"].values():
         if b.get("status") == "running":
