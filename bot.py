@@ -3326,7 +3326,6 @@ def restart_child(b: Dict[str, Any]) -> Dict[str, Any]:
 _VM_MAX_BOTS   = 1
 _VM_RAM_LIMIT  = 500
 _VM_RESERVE_MB = 80
-_VM_LIGHT_MB   = 80
 
 
 def _vm_get(vm_id: str) -> Optional[Dict[str, Any]]:
@@ -3339,30 +3338,6 @@ def _vm_count_on(vm_id: str) -> int:
                    if x.get("vm_id") == vm_id and x.get("status") == "running")
     except Exception:
         return 0
-
-
-def _vm_all_light(vm: Dict[str, Any]) -> bool:
-    """True if every running bot on this PID uses < _VM_LIGHT_MB."""
-    if _vmc is None:
-        return False
-    try:
-        bots = [x for x in db_load().get("bots", {}).values()
-                if x.get("vm_id") == vm.get("vm_id") and x.get("status") == "running"]
-    except Exception:
-        return False
-    for x in bots:
-        try:
-            st = _vmc.get_bot_stats(vm["url"], vm.get("secret", ""), x["_id"])
-        except Exception:
-            return False
-        if not st or not st.get("ok"):
-            return False
-        try:
-            if float(st.get("ram_mb", 999)) > _VM_LIGHT_MB:
-                return False
-        except Exception:
-            return False
-    return True
 
 
 def _vm_pick_best() -> Optional[Dict[str, Any]]:
@@ -3391,8 +3366,6 @@ def _vm_pick_best() -> Optional[Dict[str, Any]]:
         if free_mb < _VM_RESERVE_MB:
             continue
         if not st.get("can_accept", True):
-            continue
-        if n == _VM_MAX_BOTS - 1 and not _vm_all_light(vm):
             continue
         cands.append((free_mb, vm))
     if not cands:
@@ -3637,6 +3610,19 @@ def start_child(b: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": "Bot is waiting for admin approval."}
     if (b or {}).get("approval_status") == "rejected":
         return {"ok": False, "error": "Bot was rejected by admin."}
+    # ── Max 1 RUNNING bot per user (owner/admins exempt) ──────────
+    # Restarting the same bot is always allowed (it is excluded below).
+    try:
+        _uid = (b or {}).get("owner", 0)
+        if _uid and not is_admin(_uid):
+            _other_running = [
+                x for x in list_user_bots(_uid)
+                if x.get("_id") != (b or {}).get("_id") and x.get("status") == "running"
+            ]
+            if _other_running:
+                return {"ok": False, "error": "Only 1 bot can run at a time. Stop your running bot first."}
+    except Exception:
+        pass
     try:
         with _runner_lock:
             existing = RUNNING.get(b["_id"])

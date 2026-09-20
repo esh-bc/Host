@@ -21,7 +21,6 @@ except Exception:
 
 VM_MAX_BOTS_PER_VM     = int(os.environ.get("VM_MAX_BOTS_PER_VM", "1"))
 VM_RAM_RESERVE_MB      = int(os.environ.get("VM_RAM_RESERVE_MB", "80"))
-VM_LIGHTWEIGHT_THRESHOLD = int(os.environ.get("VM_LIGHTWEIGHT_MB", "80"))
 VM_BOT_RAM_LIMIT       = int(os.environ.get("VM_BOT_RAM_LIMIT", "500"))
 
 TIMEOUT = 15
@@ -135,33 +134,6 @@ def list_bots(url: str, secret: str) -> dict:
 
 # ── Smart VM Selector ────────────────────────────────────────────
 
-def _check_vm_lightweight(vm: dict) -> bool:
-    """
-    Check if all bots on this VM are lightweight.
-    Lightweight = using less than VM_LIGHTWEIGHT_THRESHOLD MB each.
-    Called only when VM already has 2 bots to decide if 3rd allowed.
-    """
-    if not _MONGO_OK or db is None:
-        return True
-    vm_bots = db.get_vm_bots(vm["vm_id"])
-    running_bots = [b for b in vm_bots if b["status"] == "running"]
-
-    for bot in running_bots:
-        stats = get_bot_stats(vm["url"], vm["secret"], bot["bot_id"])
-        if not stats or not stats.get("ok"):
-            # Can't get stats = assume heavy = reject
-            return False
-        ram_mb = stats.get("ram_mb", 999)
-        if ram_mb > VM_LIGHTWEIGHT_THRESHOLD:
-            _log("vm_check", {
-                "vm_id":  vm["vm_id"],
-                "bot_id": bot["bot_id"],
-                "ram_mb": ram_mb,
-                "result": "heavy — rejected 3rd bot",
-            })
-            return False
-    return True
-
 def _log(event: str, data: dict) -> None:
     try:
         if _MONGO_OK and db is not None:
@@ -177,10 +149,9 @@ def find_best_vm() -> Optional[dict]:
     Rules (in order):
       1. VM must be enabled
       2. VM must be reachable (ping)
-      3. VM must have < VM_MAX_BOTS_PER_VM bots in DB
+      3. VM must have < VM_MAX_BOTS_PER_VM bots in DB (1 bot per VM)
       4. VM must have free_ram_mb > VM_RAM_RESERVE_MB
-      5. If VM has exactly 2 bots → ALL must be lightweight
-      6. Pick VM with most free RAM
+      5. Pick VM with most free RAM
     """
     if not _MONGO_OK or db is None:
         return None
@@ -222,15 +193,6 @@ def find_best_vm() -> Optional[dict]:
                 "result":   "not enough RAM",
             })
             continue
-
-        # ── Check 4: lightweight check for 2-bot VMs ──────────
-        if bot_count == VM_MAX_BOTS_PER_VM - 1:  # == 2
-            if not _check_vm_lightweight(vm):
-                _log("vm_check", {
-                    "vm_id":  vm["vm_id"],
-                    "result": "2 bots but not lightweight — rejected",
-                })
-                continue
 
         candidates.append((free_ram, vm))
         db.log_event("vm_check", {
